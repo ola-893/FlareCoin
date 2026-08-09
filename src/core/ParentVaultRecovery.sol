@@ -9,7 +9,6 @@ import {ParentVault} from "./ParentVault.sol";
  * @dev Deploy this as a temporary upgrade, call resetActiveStrategy(), then upgrade back
  */
 contract ParentVaultRecovery is ParentVault {
-    event ActiveStrategyReset(address indexed corruptedStrategy);
 
     /**
      * @notice Emergency function to reset corrupted activeStrategy to address(0)

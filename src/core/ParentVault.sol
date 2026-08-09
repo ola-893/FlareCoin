@@ -74,36 +74,49 @@ contract ParentVault is
     event InstructionSenderUpdated(address indexed previousSender, address indexed newSender);
     event RebalanceRequested(bytes32 indexed instructionId, uint256 idleAssets, uint256 approvedStrategiesCount);
     event TeeAddressUpdated(address indexed previousTeeAddress, address indexed newTeeAddress);
+    event ActiveStrategyReset(address indexed corruptedStrategy);
 
-    /// @notice TEE node signing address for action result verification
-    address public teeAddress;
+    // ═══════════════════════════════════════════════════════════════════════
+    // STORAGE LAYOUT — ORIGINAL DEPLOYED ORDER (slots 0–5)
+    // WARNING: DO NOT reorder, insert before, or remove these variables.
+    // The proxy at 0x01f6...23B3 was initialized with this exact layout.
+    // Any change to ordering will cause storage slot collisions.
+    // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice Authorized address for FCC/TEE rebalance attestations.
+    /// @notice Authorized address for FCC/TEE rebalance attestations.  [SLOT 0]
     address public fccSigner;
 
-    /// @notice Adapter allowed to create and settle asynchronous FAsset deposits.
+    /// @notice Adapter allowed to create and settle asynchronous FAsset deposits.  [SLOT 1]
     address public fAssetAdapter;
 
-    /// @notice FCE Instruction Sender for triggering TEE rebalances.
-    address public instructionSender;
-
-    /// @notice Last instruction ID generated (bytes32, not uint256)
-    bytes32 public lastInstructionId;
-
-    /// @notice Minimum idle assets required to trigger automatic rebalance.
-    uint256 public rebalanceThreshold;
-
-    /// @notice Adapter currently holding the deployed capital, if any.
+    /// @notice Adapter currently holding the deployed capital, if any.  [SLOT 2]
     address public activeStrategy;
 
-    /// @notice Replay-protection counter for FCC payloads.
+    /// @notice Replay-protection counter for FCC payloads.  [SLOT 3]
     uint256 public rebalanceNonce;
 
-    /// @notice Time a valid FCC-signed rebalance was last executed.
+    /// @notice Time a valid FCC-signed rebalance was last executed.  [SLOT 4]
     uint256 public teeLastActive;
 
-    /// @notice Share of assets retained locally for immediate ERC-4626 withdrawals.
+    /// @notice Share of assets retained locally for immediate ERC-4626 withdrawals.  [SLOT 5]
     uint16 public liquidityBufferBps;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // APPENDED VARIABLES — added post-deployment (slots 6+)
+    // New variables MUST only be appended here, never inserted above.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice TEE node signing address for action result verification.  [SLOT 6]
+    address public teeAddress;
+
+    /// @notice FCE Instruction Sender for triggering TEE rebalances.  [SLOT 7]
+    address public instructionSender;
+
+    /// @notice Last instruction ID generated (bytes32, not uint256).  [SLOT 8]
+    bytes32 public lastInstructionId;
+
+    /// @notice Minimum idle assets required to trigger automatic rebalance.  [SLOT 9]
+    uint256 public rebalanceThreshold;
 
     mapping(address strategy => bool approved) public approvedStrategies;
     mapping(bytes32 depositId => address receiver) public pendingDepositReceiver;
@@ -485,6 +498,14 @@ contract ParentVault is
 
     function setRebalanceThreshold(uint256 newThreshold) external onlyOwner {
         rebalanceThreshold = newThreshold;
+    }
+
+    /// @notice One-time recovery: clears a corrupted activeStrategy and resets teeLastActive.
+    function clearActiveStrategy() external onlyOwner {
+        address corrupted = activeStrategy;
+        activeStrategy = address(0);
+        teeLastActive = block.timestamp;
+        emit ActiveStrategyReset(corrupted);
     }
 
     function pause() external onlyOwner {
