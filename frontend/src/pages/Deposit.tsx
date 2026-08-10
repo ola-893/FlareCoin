@@ -374,7 +374,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
     localStorage.setItem('flux-auto-deploy', JSON.stringify({
       deadline,
       xrplAmount,
-      strategy: CONTRACTS.strategies.enosysFxrp,
+      strategy: CONTRACTS.strategies.sparkDexLp,
     }));
   };
 
@@ -1361,7 +1361,7 @@ const StepDeployToStrategy: React.FC<{
       )}
       <div className="flex items-center justify-between text-xs">
         <span className="text-[#4A4A4A]">Target Strategy</span>
-        <span className="font-mono font-bold text-[#E1BAC2]">Enosys DEX FXRP</span>
+        <span className="font-mono font-bold text-[#E1BAC2]">SparkDEX V2 LP</span>
       </div>
       <div className="flex items-center justify-between text-xs">
         <span className="text-[#4A4A4A]">Projected APY</span>

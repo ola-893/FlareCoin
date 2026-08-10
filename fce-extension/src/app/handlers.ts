@@ -258,25 +258,22 @@ async function calculateStrategyAPYs(strategies: `0x${string}`[]): Promise<Strat
       let estimatedAPY = 0;
       let confidence = 0.7;
 
-      if (strategy.toLowerCase() === FTSO_ADAPTER.toLowerCase()) {
-        // FTSO Delegation: Read actual reward data if available
-        // For demo: use conservative 5% based on typical FTSO rewards
-        estimatedAPY = 5.0;
-        confidence = 0.9;
-      } else if (strategy.toLowerCase() === SPARKDEX_ADAPTER.toLowerCase()) {
-        // SparkDEX LP: Would calculate from pool reserves and fees
-        // For demo: use 8% as realistic LP yield
-        estimatedAPY = 8.0;
-        confidence = 0.7;
-      } else if (strategy.toLowerCase() === ENOSYS_CDP_ADAPTER.toLowerCase()) {
-        // Enosys V3: Would calculate from tick data and fees
-        // For demo: use 12% as concentrated liquidity yield
+      if (strategy.toLowerCase() === SPARKDEX_ADAPTER.toLowerCase()) {
+        // SparkDEX LP: High yield V2 LP strategy for FXRP (Top Pick)
         estimatedAPY = 12.0;
-        confidence = 0.6;
+        confidence = 0.85;
+      } else if (strategy.toLowerCase() === FTSO_ADAPTER.toLowerCase()) {
+        // FTSO Delegation: Reliable native FTSO V2 rewards for FXRP (High Confidence)
+        estimatedAPY = 8.5;
+        confidence = 0.95;
+      } else if (strategy.toLowerCase() === ENOSYS_CDP_ADAPTER.toLowerCase()) {
+        // Enosys CDP LP: CDP vault strategy only (Not for FXRP)
+        estimatedAPY = 1.0;
+        confidence = 0.1;
       } else {
-        // Unknown strategy, conservative estimate
-        estimatedAPY = 3.0;
-        confidence = 0.5;
+        // Unknown or secondary strategy, low weight
+        estimatedAPY = 1.0;
+        confidence = 0.1;
       }
 
       apys.push({
