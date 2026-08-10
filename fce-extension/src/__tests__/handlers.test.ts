@@ -20,7 +20,7 @@ describe("handleCalculateOptimal", () => {
   it("calculates optimal strategy and returns ABI-encoded payload", async () => {
     const requestHex = encodeRebalanceRequest({
       vaultAddress: PARENT_VAULT_FXRP,
-      idleAssets: BigInt("10000000000000000000"), // 10 FXRP
+      idleAssets: BigInt("10000000"), // 10 FXRP (6 decimals)
       approvedStrategies: [FTSO_ADAPTER, SPARKDEX_ADAPTER],
       liquidityBufferBps: 1000, // 10%
     });
@@ -50,7 +50,7 @@ describe("handleCalculateOptimal", () => {
   it("rejects request with zero approved strategies", async () => {
     const requestHex = encodeRebalanceRequest({
       vaultAddress: PARENT_VAULT_FXRP,
-      idleAssets: BigInt("5000000000000000000"),
+      idleAssets: BigInt("5000000"), // 5 FXRP (6 decimals)
       approvedStrategies: [],
       liquidityBufferBps: 1000,
     });
@@ -64,10 +64,10 @@ describe("handleCalculateOptimal", () => {
 });
 
 describe("handleGetAPYs", () => {
-  it("returns encoded APYs for requested strategies", () => {
+  it("returns encoded APYs for requested strategies", async () => {
     const msg = "0x" + Buffer.from(JSON.stringify([FTSO_ADAPTER, SPARKDEX_ADAPTER])).toString("hex");
 
-    const result = handlers.handleGetAPYs(msg);
+    const result = await handlers.handleGetAPYs(msg);
 
     expect(result[1]).toBe(1);
     expect(result[2]).toBeNull();

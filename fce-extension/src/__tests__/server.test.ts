@@ -35,7 +35,7 @@ function buildAction(opts: {
     opCommand = stringToBytes32Hex("CALCULATE_OPTIMAL"),
     originalHex = encodeRebalanceRequest({
       vaultAddress: PARENT_VAULT_FXRP,
-      idleAssets: BigInt("10000000000000000000"),
+      idleAssets: BigInt("10000000"), // 10 FXRP (6 decimals)
       approvedStrategies: [FTSO_ADAPTER, SPARKDEX_ADAPTER],
       liquidityBufferBps: 1000,
     }),

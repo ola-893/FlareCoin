@@ -66,7 +66,7 @@ Flux utilizes a dual-tier execution model that pairs external event listening wi
 | **`ParentVault_FXRP`** | `0x01f64160E4928Eba5607aE294F9B66090Dc323B3` | `FTestXRP` (`0x0b6A...3dc7`) | ✅ **LIVE & UPGRADED** |
 | **`ParentVault_CDP`** | `0x71cF7B0f792400a2533e917bcfB3892b34b569e8` | `Enosys CDP` (`0x41D5...059`) | ✅ **LIVE & UPGRADED** |
 | **`MockInstructionSender`** | `0x4D7e4817aF347141dDaBd44C4de932F382813e67` | On-Chain Instruction Sender | ✅ **ACTIVE & WIRED** |
-| **`FtsoV2DelegationAdapter`** | `0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB` | `FXRP` $\rightarrow$ `WNAT` | ✅ **APPROVED (Vault 1)** |
+| **`FtsoV2DelegationAdapter`** | `0xc529Eb4a03EC14E58598D03058DBb43B75059851` | `FXRP` $\rightarrow$ `WNAT` | ✅ **APPROVED (Vault 1)** |
 | **`SparkDexAdapter`** | `0xA88327A42267C0dE171CBECA1b016dEF2e990612` | `FXRP / WC2FLR` LP | ✅ **APPROVED (Vault 1)** |
 | **`EnosysCdpAdapter`** | `0x276BBc877C3d50e50848E7ca8c68241D959F4800` | `CDP / WC2FLR` V3 LP | ✅ **APPROVED (Vault 2)** |
 | **`WNat / WC2FLR`** | `0xC67DCE33D7A8efA5FfEB961899C73fe01bCe9273` | Native Wrapped Token | ✅ Active |

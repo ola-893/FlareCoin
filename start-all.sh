@@ -51,7 +51,7 @@ if [[ "$ACTION" == "stop" ]]; then
     if [[ -d "fce-extension-scaffold" ]]; then
         log "Stopping FCE scaffold Docker services..."
         cd fce-extension-scaffold
-        ./scripts/start-services.sh --chain coston2 2>/dev/null || docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml down 2>/dev/null || true
+        docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml down 2>/dev/null || true
         cd ..
     fi
     
@@ -100,72 +100,100 @@ fi
 log "✅ Prerequisites OK"
 echo ""
 
-# Step 1: Start FCE Extension Scaffold (Docker services)
-log "📦 Step 1/4: Starting FCE Extension Scaffold (Docker)"
-log "  • Redis (port 6382)"
-log "  • Extension Proxy (ports 6673, 6674)"
-log "  • TEE Node"
+# Step 1: Start FCE Extension Scaffold (Docker services) - Optional
+log "📦 Step 1/5: Starting FCE Extension Scaffold (Docker)"
 
-if [[ ! -d "fce-extension-scaffold" ]]; then
-    die "fce-extension-scaffold directory not found"
-fi
+if [[ -d "fce-extension-scaffold" ]]; then
+    log "  • Redis (port 6382)"
+    log "  • Extension Proxy (ports 6673, 6674)"
+    log "  • TEE Node"
 
-cd fce-extension-scaffold
+    cd fce-extension-scaffold
 
-# Check if .env exists
-if [[ ! -f ".env" ]]; then
-    warn ".env file not found in fce-extension-scaffold/"
-    warn "Creating from .env.example..."
-    if [[ -f ".env.example" ]]; then
-        cp .env.example .env
-        warn "⚠️  Please configure fce-extension-scaffold/.env before continuing"
-        die "Configuration required"
-    else
-        die ".env.example not found"
+    # Check if .env exists
+    if [[ ! -f ".env" ]]; then
+        warn ".env file not found in fce-extension-scaffold/"
+        warn "Creating from .env.example..."
+        if [[ -f ".env.example" ]]; then
+            cp .env.example .env
+            warn "⚠️  Please configure fce-extension-scaffold/.env before continuing"
+            die "Configuration required"
+        else
+            die ".env.example not found"
+        fi
     fi
-fi
 
-# Start Docker services for Coston2 using start-services.sh
-# This script handles language resolution, ensuring TypeScript extension builds (not Go default)
-log "Starting Docker Compose services for Coston2..."
-./scripts/start-services.sh --chain coston2
+    # Heal stale networks that Compose would refuse to reuse.
+    # Compose only adopts an existing network if it carries its own
+    # com.docker.compose.* labels; a leftover network (e.g. created
+    # outside compose, or by an aborted run) has no/foreign labels and
+    # makes `up` fail with: "network ... has incorrect label
+    # com.docker.compose.network set to \"\" (expected: \"default\")".
+    NETWORK_NAME="${COMPOSE_NETWORK:-extension-scaffold-coston2}"
+    # Compose project name = COMPOSE_PROJECT_NAME override, else normalized dirname.
+    COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+    if docker network inspect "$NETWORK_NAME" &>/dev/null; then
+        # "default" is the network key name in docker-compose.yaml.
+        NET_LABEL="$(docker network inspect "$NETWORK_NAME" --format '{{index .Labels "com.docker.compose.network"}}' 2>/dev/null || true)"
+        NET_PROJECT="$(docker network inspect "$NETWORK_NAME" --format '{{index .Labels "com.docker.compose.project"}}' 2>/dev/null || true)"
+        if [[ "$NET_LABEL" != "default" || "$NET_PROJECT" != "$COMPOSE_PROJECT" ]]; then
+            warn "Stale network '$NETWORK_NAME' is not owned by this compose project — removing it so Compose can recreate it"
+            if ! docker network rm "$NETWORK_NAME" 2>/dev/null; then
+                warn "Could not remove '$NETWORK_NAME' (containers may be attached)."
+                warn "Run: docker network disconnect --force <container> '$NETWORK_NAME' and retry."
+            fi
+        fi
+    fi
 
-# Wait for services to be ready
-log "Waiting for services to initialize..."
-sleep 5
+    # Start Docker services for Coston2
+    log "Starting Docker Compose services for Coston2..."
+    docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml up -d
 
-# Check if Redis is responding
-if docker compose exec -T redis redis-cli ping &>/dev/null; then
-    log "✅ Redis ready"
+    # Wait for services to be ready
+    log "Waiting for services to initialize..."
+    sleep 5
+
+    # Check if Redis is responding
+    if docker compose exec -T redis redis-cli ping &>/dev/null; then
+        log "✅ Redis ready"
+    else
+        warn "⚠️  Redis may not be ready yet"
+    fi
+
+    cd ..
 else
-    warn "⚠️  Redis may not be ready yet"
+    warn "fce-extension-scaffold/ not found — skipping Docker services"
+    warn "FCE extension will run standalone (no TEE node)"
 fi
-
-cd ..
 echo ""
 
 # Step 2: Start Executor
-log "⚙️  Step 2/4: Starting Off-chain Executor"
+log "⚙️  Step 2/5: Starting Off-chain Executor"
 log "  • Monitors XRPL deposits"
 log "  • Calls processDirectMint() on-chain"
 
-if [[ ! -f "executor/.env" ]]; then
-    warn "⚠️  executor/.env not found - executor may fail to start"
+if [[ ! -d "executor" ]]; then
+    warn "executor/ directory not found — skipping executor"
+else
+    if [[ ! -f "executor/.env" ]]; then
+        warn "⚠️  executor/.env not found - executor may fail to start"
+    fi
+
+    # Start executor in background
+    log "Starting executor..."
+    cd executor
+    nohup npm start > ../executor.log 2>&1 &
+    EXECUTOR_PID=$!
+    disown $EXECUTOR_PID
+    echo $EXECUTOR_PID > ../executor.pid
+    cd ..
+
+    log "✅ Executor started (PID: $EXECUTOR_PID, logs: executor.log)"
 fi
-
-# Start executor in background
-log "Starting executor..."
-cd executor
-npm start > ../executor.log 2>&1 &
-EXECUTOR_PID=$!
-echo $EXECUTOR_PID > ../executor.pid
-cd ..
-
-log "✅ Executor started (PID: $EXECUTOR_PID, logs: executor.log)"
 echo ""
 
 # Step 3: Start ngrok tunnel
-log "🌐 Step 3/5: Starting ngrok tunnel"
+log "🌐 Step 3/5: Starting ngrok tunnel (optional)"
 log "  • Exposes FCE extension to external network"
 log "  • Reserved domain: trolling-affluent-parcel.ngrok-free.dev"
 
@@ -202,13 +230,18 @@ log "🔌 Step 4/5: Starting FCE Extension Handler"
 log "  • Handles VAULT_REBALANCE actions from TEE"
 log "  • Signs settlement transactions"
 
-cd fce-extension
-npm start > ../fce-extension.log 2>&1 &
-FCE_PID=$!
-echo $FCE_PID > ../fce-extension.pid
-cd ..
+if [[ ! -d "fce-extension" ]]; then
+    warn "fce-extension/ directory not found — skipping FCE extension"
+else
+    cd fce-extension
+    nohup npm start > ../fce-extension.log 2>&1 &
+    FCE_PID=$!
+    disown $FCE_PID
+    echo $FCE_PID > ../fce-extension.pid
+    cd ..
 
-log "✅ FCE Extension started (PID: $FCE_PID, logs: fce-extension.log)"
+    log "✅ FCE Extension started (PID: $FCE_PID, logs: fce-extension.log)"
+fi
 echo ""
 
 # Step 5: Start Frontend
@@ -216,17 +249,22 @@ log "🎨 Step 5/5: Starting Frontend (React UI)"
 log "  • Development server with hot reload"
 log "  • Will open in browser automatically"
 
-if [[ ! -f "frontend/.env" ]]; then
-    warn "⚠️  frontend/.env not found - frontend may use incorrect contract addresses"
+if [[ ! -d "frontend" ]]; then
+    warn "frontend/ directory not found — skipping frontend"
+else
+    if [[ ! -f "frontend/.env" ]]; then
+        warn "⚠️  frontend/.env not found - frontend may use incorrect contract addresses"
+    fi
+
+    cd frontend
+    nohup npm run dev > ../frontend.log 2>&1 &
+    FRONTEND_PID=$!
+    disown $FRONTEND_PID
+    echo $FRONTEND_PID > ../frontend.pid
+    cd ..
+
+    log "✅ Frontend started (PID: $FRONTEND_PID, logs: frontend.log)"
 fi
-
-cd frontend
-npm run dev > ../frontend.log 2>&1 &
-FRONTEND_PID=$!
-echo $FRONTEND_PID > ../frontend.pid
-cd ..
-
-log "✅ Frontend started (PID: $FRONTEND_PID, logs: frontend.log)"
 echo ""
 
 # Wait a moment for everything to initialize
@@ -239,7 +277,7 @@ echo -e "${CYAN}║${NC}  ${GREEN}✅ FlareYield Manager - All Services Running$
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${BLUE}📍 Service URLs:${NC}"
-echo -e "   Frontend:        ${CYAN}http://localhost:5173${NC}"
+echo -e "   Frontend:        ${CYAN}http://localhost:5200${NC}"
 echo -e "   FCE Extension:   ${CYAN}http://localhost:8080${NC}"
 echo -e "   ngrok Dashboard: ${CYAN}http://localhost:4040${NC}"
 echo -e "   ngrok Public:    ${CYAN}https://trolling-affluent-parcel.ngrok-free.dev${NC}"
@@ -265,5 +303,5 @@ echo -e "   • If FCE services timeout after ~5 hours, restart proxy:"
 echo -e "     ${CYAN}cd fce-extension-scaffold && docker compose restart ext-proxy${NC}"
 echo -e "   • All services log to separate files for easy debugging"
 echo ""
-echo -e "${GREEN}🎉 Ready to test! Visit http://localhost:5173 to start.${NC}"
+echo -e "${GREEN}🎉 Ready to test! Visit http://localhost:5200 to start.${NC}"
 echo ""

@@ -90,7 +90,7 @@ Returns current APY estimates for requested strategies.
 
 **Request Format:**
 ```json
-["0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB", "0xA88327A42267C0dE171CBECA1b016dEF2e990612"]
+["0xc529Eb4a03EC14E58598D03058DBb43B75059851", "0xA88327A42267C0dE171CBECA1b016dEF2e990612"]
 ```
 
 **Response Format (ABI-encoded):**
@@ -116,12 +116,13 @@ export const PARENT_VAULT_FXRP = "0x01f64160E4928Eba5607aE294F9B66090Dc323B3";
 export const PARENT_VAULT_CDP = "0x71cF7B0f792400a2533e917bcfB3892b34b569e8";
 
 // Strategies
-export const FTSO_ADAPTER = "0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB";
+export const FTSO_ADAPTER = "0xc529Eb4a03EC14E58598D03058DBb43B75059851";
 export const SPARKDEX_ADAPTER = "0xA88327A42267C0dE171CBECA1b016dEF2e990612";
 export const ENOSYS_CDP_ADAPTER = "0x276BBc877C3d50e50848E7ca8c68241D959F4800";
 
 // Thresholds
-export const MIN_REBALANCE_AMOUNT = BigInt(1000000000000000000); // 1 FXRP
+// FXRP is a 6-decimal token — amounts are sent/received in 6-decimal scale.
+export const MIN_REBALANCE_AMOUNT = BigInt(1_000_000); // 1 FXRP (6 decimals)
 export const SLIPPAGE_TOLERANCE_BPS = 50; // 0.5%
 ```
 
@@ -273,11 +274,11 @@ curl http://localhost:8080/state
 {
   "lastRebalanceTime": 1707000000,
   "totalRebalances": 42,
-  "lastOptimalStrategy": "0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB",
+  "lastOptimalStrategy": "0xc529Eb4a03EC14E58598D03058DBb43B75059851",
   "cachedAPYsCount": 3,
   "cachedAPYs": [
     {
-      "address": "0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB",
+      "address": "0xc529Eb4a03EC14E58598D03058DBb43B75059851",
       "apy": 5.5,
       "confidence": 0.9,
       "lastUpdate": 1707000000

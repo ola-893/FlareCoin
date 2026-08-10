@@ -19,7 +19,7 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
  */
 contract EmergencyRecovery is Script {
     address constant PARENT_VAULT_PROXY = 0x01f64160E4928Eba5607aE294F9B66090Dc323B3;
-    address constant FTSO_V2_STRATEGY = 0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB;
+    address constant FTSO_V2_STRATEGY = 0xc529Eb4a03EC14E58598D03058DBb43B75059851; // live FTSO v2 adapter
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");

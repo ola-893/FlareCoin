@@ -1,15 +1,14 @@
 import React, {useState, useMemo} from 'react';
 import {useAccount, useBalance, useReadContract} from 'wagmi';
+import {useQueryClient} from '@tanstack/react-query';
 import {formatUnits} from 'viem';
 import {motion} from 'motion/react';
 import {ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip} from 'recharts';
 import {
-  TrendingUp, Layers, Clock, ArrowUpRight, ArrowDownRight, Wallet, RefreshCw,
-  Zap, ShieldCheck, Copy, Check, ChevronRight, ArrowRight, Cpu, Lock, Server,
-  Coins, Activity, Calendar, Target, DollarSign, BarChart3, Info, ExternalLink,
-  TrendingDown, AlertCircle
+  TrendingUp, Layers, ArrowUpRight, ArrowDownRight, Wallet, RefreshCw,
+  Zap, ShieldCheck, Copy, Check, ChevronRight, ArrowRight, Cpu,
+  Coins, Target, DollarSign, BarChart3, Info, ExternalLink
 } from 'lucide-react';
-import xrpImg from '../assets/images/xrp.webp';
 import {CONTRACTS, PARENT_VAULT_ABI, STRATEGY_ADAPTER_ABI, EXPLORER_BASE_URL} from '../config/contracts';
 import {StrategiesModal} from '../components/StrategiesModal';
 import {useCryptoPrices, xrpToUsd, formatUsd} from '../hooks/useXrpPrice';
@@ -103,21 +102,6 @@ const formatNumber = (n: number, decimals = 4): string => {
   return n.toFixed(decimals);
 };
 
-const formatCurrency = (n: number): string => {
-  if (n === 0) return '$0';
-  if (n < 0.01) return '<$0.01';
-  return `$${n.toFixed(2)}`;
-};
-
-const getTimeSince = (timestamp: number): string => {
-  if (timestamp === 0) return 'Never';
-  const seconds = Math.floor(Date.now() / 1000) - timestamp;
-  if (seconds < 60) return 'Just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-};
-
 // ─── Main Dashboard Component ───────────────────────────────────────────────
 export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavigateToWithdraw}) => {
   const {address, isConnected} = useAccount();
@@ -126,7 +110,6 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
   const [showStrategiesModal, setShowStrategiesModal] = useState(false);
   const [projectionDays, setProjectionDays] = useState(30);
   const [showDebug, setShowDebug] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   // Fetch crypto prices for USD calculations
   const {xrp: xrpPriceData, btc: btcPriceData, cdp: cdpPriceData, isLoading: isPriceLoading} = useCryptoPrices();
@@ -170,20 +153,6 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
     query: {enabled: isFxrpDeployed},
   });
 
-  const {data: fxrpTeeLastActive} = useReadContract({
-    address: FXRP_VAULT_ADDRESS,
-    abi: PARENT_VAULT_ABI,
-    functionName: 'teeLastActive',
-    query: {enabled: isFxrpDeployed},
-  });
-
-  const {data: fxrpRebalanceNonce} = useReadContract({
-    address: FXRP_VAULT_ADDRESS,
-    abi: PARENT_VAULT_ABI,
-    functionName: 'rebalanceNonce',
-    query: {enabled: isFxrpDeployed},
-  });
-
   const {data: fxrpDecimals} = useReadContract({
     address: FXRP_VAULT_ADDRESS,
     abi: PARENT_VAULT_ABI,
@@ -221,17 +190,17 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
   });
 
   // Read strategy adapter's totalValue for yield calculation
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const {data: strategyTotalValue, refetch: refetchStrategyValue} = useReadContract({
+  const {data: strategyTotalValue} = useReadContract({
     address: fxrpActiveStrategy as `0x${string}` | undefined,
     abi: STRATEGY_ADAPTER_ABI,
     functionName: 'totalValue',
     query: {enabled: isFxrpDeployed && !!fxrpActiveStrategy && fxrpActiveStrategy !== '0x0000000000000000000000000000000000000000'},
   });
 
-  // Manual refresh function
+  // Manual refresh: invalidate all cached queries to refetch on-chain data
+  const queryClient = useQueryClient();
   const handleRefresh = () => {
-    setRefreshKey(prev => prev + 1);
+    queryClient.invalidateQueries();
   };
 
   // ═══ CDP Vault Reads ════════════════════════════════════════════════════
@@ -292,34 +261,43 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
   const fxrpHasActiveStrategy = fxrpActiveStrategy && fxrpActiveStrategy !== '0x0000000000000000000000000000000000000000';
   const fxrpStrategyInfo = fxrpHasActiveStrategy ? STRATEGY_INFO[fxrpActiveStrategy as string] ?? getDefaultStrategyInfo(fxrpActiveStrategy as string) : getDefaultStrategyInfo(undefined);
 
-  // Debug: Log calculated values
-  console.log('[Dashboard Debug] Contract reads:', {
-    fxrpUserShares: fxrpUserShares?.toString(),
-    fxrpTotalAssets: fxrpTotalAssets?.toString(),
-    fxrpTotalSupply: fxrpTotalSupply?.toString(),
-    fxrpActiveStrategy,
-    decimals,
-    address,
-  });
-  console.log('[Dashboard Debug] Calculated:', {
-    fxrpUserSharesNum,
-    fxrpTotalAssetsNum,
-    fxrpTotalSupplyNum,
-    fxrpSharePrice,
-    fxrpUserValue,
-  });
+  // Individual (per-account) deployment: the strategy holds the vault's pooled
+  // capital, so a user's personal deployed amount = their value × the vault's
+  // deployment ratio (strategy totalValue ÷ vault totalAssets).
+  const fxrpStrategyValueNum = strategyTotalValue ? Number(formatUnits(strategyTotalValue, decimals)) : 0;
+  const fxrpDeployRatio = fxrpTotalAssetsNum > 0 && fxrpStrategyValueNum > 0
+    ? Math.min(fxrpStrategyValueNum / fxrpTotalAssetsNum, 1)
+    : 0.9;
+  const fxrpUserSharePct = fxrpTotalSupplyNum > 0 ? (fxrpUserSharesNum / fxrpTotalSupplyNum) * 100 : 0;
+  const fxrpUserDeployed = fxrpUserValue * fxrpDeployRatio;
+
+  // Debug: Log calculated values only when the debug panel is open
+  if (showDebug) {
+    console.log('[Dashboard Debug] Contract reads:', {
+      fxrpUserShares: fxrpUserShares?.toString(),
+      fxrpTotalAssets: fxrpTotalAssets?.toString(),
+      fxrpTotalSupply: fxrpTotalSupply?.toString(),
+      fxrpActiveStrategy,
+      decimals,
+      address,
+    });
+    console.log('[Dashboard Debug] Calculated:', {
+      fxrpUserSharesNum,
+      fxrpTotalAssetsNum,
+      fxrpTotalSupplyNum,
+      fxrpSharePrice,
+      fxrpUserValue,
+    });
+  }
 
   // Calculate yield metrics
   // If share price > 1, yield has been accrued
   // Accrued yield = userValue - (userShares * 1.0) assuming 1:1 deposit
   const fxrpAccruedYield = fxrpUserSharesNum > 0 ? fxrpUserValue - fxrpUserSharesNum : 0;
-  const fxrpYieldPercentage = fxrpUserSharesNum > 0 ? ((fxrpSharePrice - 1) * 100) : 0;
 
   // Projected yield calculations (using mid-point APY)
   const estimatedApy = fxrpHasActiveStrategy ? (fxrpStrategyInfo.apyLow + fxrpStrategyInfo.apyHigh) / 2 / 100 : 0;
   const dailyYield = fxrpUserValue * estimatedApy / 365;
-  const weeklyYield = dailyYield * 7;
-  const monthlyYield = dailyYield * 30;
   const yearlyYield = fxrpUserValue * estimatedApy;
 
   // Projection chart data
@@ -354,8 +332,20 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
   const cdpUserSharesNum = cdpUserShares ? Number(formatUnits(cdpUserShares, cdpDec)) : 0;
   const cdpSharePrice = cdpTotalSupplyNum > 0 ? cdpTotalAssetsNum / cdpTotalSupplyNum : 1;
   const cdpUserValue = cdpUserSharesNum * cdpSharePrice;
-  const cdpHasActiveStrategy = cdpActiveStrategy && cdpActiveStrategy !== '0x0000000000000000000000000000000000000000';
-  const cdpStrategyInfo = cdpHasActiveStrategy ? STRATEGY_INFO[cdpActiveStrategy as string] ?? getDefaultStrategyInfo(cdpActiveStrategy as string) : getDefaultStrategyInfo(undefined);
+  const cdpActiveStr = cdpActiveStrategy as string | undefined;
+  const cdpKnownStrategyInfo = cdpActiveStr ? STRATEGY_INFO[cdpActiveStr] : undefined;
+  // Badge shows "Active" only when the on-chain strategy is recognized; otherwise
+  // the vault is deployed but awaiting deployment ("Ready").
+  const cdpHasActiveStrategy = !!cdpKnownStrategyInfo;
+  // Fall back to the configured CDP strategy (Enosys V3 CDP LP) so the card always
+  // shows real product info even when activeStrategy is unset or a placeholder.
+  const cdpStrategyInfo = cdpKnownStrategyInfo
+    ?? STRATEGY_INFO[CONTRACTS.strategies.enosysCdpLp]
+    ?? getDefaultStrategyInfo(cdpActiveStr);
+
+  // Combined pool size across both vaults (FXRP ≈ XRP price, CDP ≈ $1 peg —
+  // close enough that the summed USD is a fair approximation).
+  const combinedTotalAssets = fxrpTotalAssetsNum + cdpTotalAssetsNum;
 
   const copyAddress = () => {
     if (address) {
@@ -587,15 +577,15 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
           />
           <MetricCard
             label="Vault TVL"
-            value={formatUsd(xrpToUsd(fxrpTotalAssetsNum, xrpPrice))}
+            value={formatUsd(xrpToUsd(combinedTotalAssets, xrpPrice))}
             suffix=""
             icon={<BarChart3 className="w-4 h-4" />}
-            subtext={`${formatNumber(fxrpTotalAssetsNum, 2)} XRP`}
+            subtext={`${formatNumber(fxrpTotalAssetsNum, 2)} XRP · ${formatNumber(cdpTotalAssetsNum, 2)} CDP`}
             delay={0.2}
           />
           <MetricCard
             label="Your Share"
-            value={`${((fxrpUserValue / (fxrpTotalAssetsNum || 1)) * 100).toFixed(2)}`}
+            value={`${(((fxrpUserValue + cdpUserValue) / (combinedTotalAssets || 1)) * 100).toFixed(2)}`}
             suffix="%"
             icon={<Target className="w-4 h-4" />}
             subtext="of vault TVL"
@@ -633,7 +623,7 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
                     Active Strategy
                   </h3>
                   <p className="text-[10px] text-[#4A4A4A]">
-                    Managed by FCC/TEE
+                    Vault strategy · FCC/TEE managed · shared by all depositors
                   </p>
                 </div>
               </div>
@@ -663,7 +653,7 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
                 </div>
 
                 {/* Strategy Stats */}
-                <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="grid grid-cols-3 gap-3 mb-4">
                   <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
                     <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">APY Range</p>
                     <p className="text-sm font-bold text-emerald-600">{fxrpStrategyInfo.apy}</p>
@@ -676,43 +666,22 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
                     <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Protocol</p>
                     <p className="text-sm font-bold text-[#1E1E1E]">{fxrpStrategyInfo.protocol}</p>
                   </div>
-                  <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
-                    <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Rebalances</p>
-                    <p className="text-sm font-bold text-[#1E1E1E]">{fxrpRebalanceNonce?.toString() ?? '0'}</p>
-                  </div>
                 </div>
 
-                {/* FCE Config Status */}
-                <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10 mb-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider">FCE Config</p>
-                    <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${
-                      fxrpInstructionSender && fxrpInstructionSender !== '0x0000000000000000000000000000000000000000'
-                        ? 'bg-emerald-500/10 text-emerald-600'
-                        : 'bg-amber-500/10 text-amber-600'
-                    }`}>
-                      {fxrpInstructionSender && fxrpInstructionSender !== '0x0000000000000000000000000000000000000000' ? 'Configured' : 'Not Set'}
-                    </div>
-                  </div>
-                  {fxrpRebalanceThreshold && fxrpRebalanceThreshold > 0n && (
-                    <p className="text-[10px] text-[#4A4A4A] mt-1">
-                      Auto-deploy threshold: {formatUnits(fxrpRebalanceThreshold, decimals)} FXRP
-                    </p>
-                  )}
-                </div>
-
-                {/* Amount in Strategy */}
+                {/* Amount in Strategy (individual per-account) */}
                 <div className="p-4 rounded-2xl bg-[#1E1E1E] text-white mb-4">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-mono text-[#E1BAC2] uppercase tracking-wider">Deployed to Strategy</span>
-                    <span className="text-[10px] font-mono text-white/60">
-                      Last active: {getTimeSince(Number(fxrpTeeLastActive ?? 0))}
-                    </span>
+                    <span className="text-[10px] font-mono text-[#E1BAC2] uppercase tracking-wider">Your Deployed Capital</span>
                   </div>
                   <div className="text-xl font-extrabold" style={{fontFamily: 'Manrope, sans-serif'}}>
-                    {strategyTotalValue ? formatNumber(Number(formatUnits(strategyTotalValue, decimals))) : formatNumber(fxrpTotalAssetsNum * 0.9)} XRP
+                    {formatNumber(fxrpUserDeployed)} XRP
                   </div>
                   <p className="text-[11px] text-white/60 mt-1">
+                    {fxrpStrategyValueNum > 0 && fxrpUserSharesNum > 0 && (
+                      <>
+                        {fxrpUserSharePct.toFixed(1)}% of vault deployment ·{' '}
+                      </>
+                    )}
                     Earning {fxrpStrategyInfo.apy} APY from {fxrpStrategyInfo.protocol}
                   </p>
                 </div>
@@ -895,9 +864,9 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
         </div>
 
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        {/* CDP VAULT (if user has CDP shares) */}
+        {/* CDP VAULT (always visible when deployed) */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        {isCdpDeployed && cdpUserSharesNum > 0 && (
+        {isCdpDeployed && (
           <motion.div
             initial={{opacity: 0, y: 20}}
             animate={{opacity: 1, y: 0}}
@@ -914,7 +883,7 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
                     CDP Vault <span className="text-[10px] font-mono text-[#4A4A4A]">(fyCDP)</span>
                   </h3>
                   <p className="text-[10px] text-[#4A4A4A]">
-                    Stablecoin yield via {cdpStrategyInfo.protocol}
+                    Stablecoin yield · shared by all depositors
                   </p>
                 </div>
               </div>
@@ -924,31 +893,85 @@ export const Dashboard: React.FC<DashboardProps> = ({onNavigateToDeposit, onNavi
                   : 'bg-amber-500/10 text-amber-600 border-amber-500/20'
               }`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${cdpHasActiveStrategy ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
-                {cdpHasActiveStrategy ? 'Active' : 'Idle'}
+                {cdpHasActiveStrategy ? 'Active' : 'Ready'}
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
-                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Your fyCDP</p>
-                <p className="text-sm font-bold text-[#1E1E1E]">{formatNumber(cdpUserSharesNum)}</p>
-                <p className="text-[10px] text-[#4A4A4A]">≈ {formatNumber(cdpUserValue)} CDP</p>
-              </div>
-              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
-                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Share Price</p>
-                <p className="text-sm font-bold text-[#1E1E1E]">{cdpSharePrice.toFixed(6)}</p>
-                <p className="text-[10px] text-[#4A4A4A]">CDP per fyCDP</p>
-              </div>
-              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
-                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Vault TVL</p>
-                <p className="text-sm font-bold text-[#1E1E1E]">{formatNumber(cdpTotalAssetsNum, 2)}</p>                  <p className="text-[10px] text-[#4A4A4A]">CDP in vault</p>
-              </div>
-              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
-                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Strategy</p>
-                <p className="text-sm font-bold text-[#1E1E1E]">{cdpStrategyInfo.name}</p>
-                <p className="text-[10px] text-emerald-600 font-bold">APY {cdpStrategyInfo.apy}</p>
+            {/* Strategy Header */}
+            <div className="flex items-start gap-3 mb-4">
+              <span className="text-2xl">{cdpStrategyInfo.icon}</span>
+              <div className="flex-1">
+                <h4 className="text-base font-bold text-[#1E1E1E]" style={{fontFamily: 'Manrope, sans-serif'}}>
+                  {cdpStrategyInfo.name}
+                </h4>
+                <p className="text-xs text-[#4A4A4A] mt-0.5">
+                  {cdpStrategyInfo.description}
+                </p>
               </div>
             </div>
+
+            {/* Strategy Stats */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">APY Range</p>
+                <p className="text-sm font-bold text-emerald-600">{cdpStrategyInfo.apy}</p>
+              </div>
+              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Risk Level</p>
+                <p className="text-sm font-bold text-[#1E1E1E]">{cdpStrategyInfo.riskLevel}</p>
+              </div>
+              <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Protocol</p>
+                <p className="text-sm font-bold text-[#1E1E1E]">{cdpStrategyInfo.protocol}</p>
+              </div>
+            </div>
+
+            {cdpUserSharesNum > 0 ? (
+              /* Holder position */
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                  <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Your fyCDP</p>
+                  <p className="text-sm font-bold text-[#1E1E1E]">{formatNumber(cdpUserSharesNum)}</p>
+                  <p className="text-[10px] text-[#4A4A4A]">≈ {formatNumber(cdpUserValue)} CDP</p>
+                </div>
+                <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                  <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Share Price</p>
+                  <p className="text-sm font-bold text-[#1E1E1E]">{cdpSharePrice.toFixed(6)}</p>
+                  <p className="text-[10px] text-[#4A4A4A]">CDP per fyCDP</p>
+                </div>
+                <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                  <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Vault TVL</p>
+                  <p className="text-sm font-bold text-[#1E1E1E]">{formatNumber(cdpTotalAssetsNum, 2)}</p>
+                  <p className="text-[10px] text-[#4A4A4A]">CDP in vault</p>
+                </div>
+                <div className="p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+                  <p className="text-[10px] font-mono text-[#4A4A4A] uppercase tracking-wider mb-1">Your Share</p>
+                  <p className="text-sm font-bold text-[#1E1E1E]">
+                    {cdpTotalSupplyNum > 0 ? `${((cdpUserSharesNum / cdpTotalSupplyNum) * 100).toFixed(1)}%` : '—'}
+                  </p>
+                  <p className="text-[10px] text-[#4A4A4A]">of CDP vault</p>
+                </div>
+              </div>
+            ) : (
+              /* Empty state for non-holders */
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 rounded-2xl bg-[#F5F5F3] border border-dashed border-[#1E1E1E]/20">
+                <div className="text-center sm:text-left">
+                  <p className="text-sm font-bold text-[#1E1E1E]" style={{fontFamily: 'Manrope, sans-serif'}}>
+                    No CDP deposits yet
+                  </p>
+                  <p className="text-[11px] text-[#4A4A4A] mt-0.5">
+                    Deposit CDP to start earning {cdpStrategyInfo.apy} APY · {formatNumber(cdpTotalAssetsNum, 2)} CDP currently in the vault
+                  </p>
+                </div>
+                <button
+                  onClick={onNavigateToDeposit}
+                  className="px-6 py-2.5 rounded-full bg-[#1E1E1E] text-[#E1BAC2] text-[11px] font-bold uppercase tracking-[0.12em] hover:bg-[#000000] transition-all shadow-md flex items-center gap-2 shrink-0"
+                >
+                  <Coins className="w-3.5 h-3.5" />
+                  Deposit CDP
+                </button>
+              </div>
+            )}
           </motion.div>
         )}
 

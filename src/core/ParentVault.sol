@@ -308,7 +308,7 @@ contract ParentVault is
         // For production: maintain a proper EnumerableSet or array
         // For demo: check known strategies
         address[] memory potentialStrategies = new address[](3);
-        potentialStrategies[0] = 0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB; // FTSO
+        potentialStrategies[0] = 0xc529Eb4a03EC14E58598D03058DBb43B75059851; // FTSO v2 (live adapter, 2026-08-10)
         potentialStrategies[1] = 0xA88327A42267C0dE171CBECA1b016dEF2e990612; // SparkDex
         potentialStrategies[2] = 0x276BBc877C3d50e50848E7ca8c68241D959F4800; // Enosys CDP
 

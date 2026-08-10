@@ -119,7 +119,7 @@ cast send 0x5A839334A11983b958a7C70a8822783db6Be4bf6 \
 
 | Strategy | Address | Status |
 |----------|---------|--------|
-| **FTSO Delegation** | `0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB` | ✅ Operational |
+| **FTSO Delegation** | `0xc529Eb4a03EC14E58598D03058DBb43B75059851` | ✅ Operational |
 | **SparkDEX LP** | `0xA88327A42267C0dE171CBECA1b016dEF2e990612` | ✅ Operational |
 | **Enosys V3 LP** | `0x5A839334A11983b958a7C70a8822783db6Be4bf6` | ✅ **NEW!** |
 | **Smart Account** | `0xE0395E7B9Ac8B39463b85a8B20D93c2429F7D4Aa` | ⚠️ Pending |
