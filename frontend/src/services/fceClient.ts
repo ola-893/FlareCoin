@@ -151,7 +151,10 @@ function decodeRebalancePayload(hex: `0x${string}`): SignedRebalancePayload {
  * @param request - Vault state to calculate optimal rebalance
  * @returns Signed payload ready for executeRebalance()
  */
-export async function requestSignedRebalance(request: RebalanceRequest): Promise<TeeActionResult> {
+export async function requestSignedRebalance(
+  request: RebalanceRequest,
+  maxRetries = 20
+): Promise<TeeActionResult> {
   const { endpoint, opType, opCommand } = FCE_CONFIG;
   
   // 1. ABI-encode the rebalance request
@@ -176,83 +179,107 @@ export async function requestSignedRebalance(request: RebalanceRequest): Promise
     },
   };
   
-  console.log('[FCE] Requesting signed rebalance from TEE...');
+  console.log('[FCE] Requesting signed rebalance from TEE (max retries:', maxRetries, ')...');
   console.log('[FCE] Vault:', request.vaultAddress);
   console.log('[FCE] Idle assets:', request.idleAssets.toString());
   
-  // 4. Call FCE extension
-  const response = await fetch(`${endpoint}/action`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(action),
-  });
+  let lastError: Error | null = null;
   
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`FCE extension returned ${response.status}: ${text}`);
+  // 4. Call FCE extension with up to maxRetries attempts to handle tunnel drop rate
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 1) {
+        console.log(`[FCE] Retrying TEE request (attempt ${attempt}/${maxRetries})...`);
+      }
+
+      const response = await fetch(`${endpoint}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action),
+      });
+      
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`FCE extension returned ${response.status}: ${text}`);
+      }
+      
+      const result: FCEActionResult = await response.json();
+      
+      // 5. Check status
+      if (result.status !== 1) {
+        throw new Error(`FCE rebalance failed: ${result.log}`);
+      }
+      
+      console.log('[FCE] Signed payload received successfully on attempt', attempt);
+      console.log('[FCE] Version:', result.version);
+      console.log('[FCE] Log:', result.log);
+      
+      // 6. Decode the signed payload to extract signature
+      const payload = decodeRebalancePayload(result.data as `0x${string}`);
+      
+      // 7. Validate signature
+      if (!payload.signature || payload.signature === '0x' || payload.signature.length < 132) {
+        throw new Error('Invalid signature from TEE: empty or too short');
+      }
+      
+      console.log('[FCE] Strategy:', payload.newStrategy);
+      console.log('[FCE] Nonce:', payload.nonce.toString());
+      console.log('[FCE] Signature length:', payload.signature.length, 'chars');
+      
+      // 8. Encode resultData (RebalancePayload without signature) for executeRebalance
+      const resultData = encodeAbiParameters(
+        parseAbiParameters('address newStrategy, uint256 minAmountOut, uint256 nonce, uint256 deadline, uint256 twapStart, uint256 twapEnd, bytes32 strategyDataHash'),
+        [
+          payload.newStrategy,
+          payload.minAmountOut,
+          payload.nonce,
+          payload.deadline,
+          payload.twapStart,
+          payload.twapEnd,
+          payload.strategyDataHash,
+        ]
+      );
+      
+      // 9. Return full TeeActionResult for new 5-param executeRebalance
+      return {
+        resultData,
+        actionId: action.data.id as `0x${string}`,
+        submissionTag: action.data.submissionTag,
+        status: result.status,
+        signature: payload.signature,
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`[FCE] TEE request attempt ${attempt}/${maxRetries} failed: ${lastError.message}`);
+      if (attempt < maxRetries) {
+        // Wait 500ms before next retry
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
   }
-  
-  const result: FCEActionResult = await response.json();
-  
-  // 5. Check status
-  if (result.status !== 1) {
-    throw new Error(`FCE rebalance failed: ${result.log}`);
-  }
-  
-  console.log('[FCE] Signed payload received!');
-  console.log('[FCE] Version:', result.version);
-  console.log('[FCE] Log:', result.log);
-  
-  // 6. Decode the signed payload to extract signature
-  const payload = decodeRebalancePayload(result.data as `0x${string}`);
-  
-  // 7. Validate signature
-  if (!payload.signature || payload.signature === '0x' || payload.signature.length < 132) {
-    throw new Error('Invalid signature from TEE: empty or too short');
-  }
-  
-  console.log('[FCE] Strategy:', payload.newStrategy);
-  console.log('[FCE] Nonce:', payload.nonce.toString());
-  console.log('[FCE] Signature length:', payload.signature.length, 'chars');
-  
-  // 8. Encode resultData (RebalancePayload without signature) for executeRebalance
-  const resultData = encodeAbiParameters(
-    parseAbiParameters('address newStrategy, uint256 minAmountOut, uint256 nonce, uint256 deadline, uint256 twapStart, uint256 twapEnd, bytes32 strategyDataHash'),
-    [
-      payload.newStrategy,
-      payload.minAmountOut,
-      payload.nonce,
-      payload.deadline,
-      payload.twapStart,
-      payload.twapEnd,
-      payload.strategyDataHash,
-    ]
-  );
-  
-  // 9. Return full TeeActionResult for new 5-param executeRebalance
-  return {
-    resultData,
-    actionId: action.data.id as `0x${string}`,
-    submissionTag: action.data.submissionTag,
-    status: result.status,
-    signature: payload.signature,
-  };
+
+  throw lastError || new Error(`FCE rebalance failed after ${maxRetries} retry attempts`);
 }
 
 /**
- * Check if FCE extension is available
+ * Check if FCE extension is available (with retries)
  */
-export async function checkFceHealth(): Promise<boolean> {
-  try {
-    const { endpoint } = FCE_CONFIG;
-    const response = await fetch(`${endpoint}/state`, { method: 'GET' });
-    if (!response.ok) {
-      console.warn('[FCE] Health check failed:', response.status);
-      return false;
+export async function checkFceHealth(maxRetries = 5): Promise<boolean> {
+  const { endpoint } = FCE_CONFIG;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(`${endpoint}/state`, { method: 'GET' });
+      if (response.ok) {
+        return true;
+      }
+    } catch (err) {
+      if (attempt === maxRetries) {
+        console.warn('[FCE] Health check failed after retries:', err);
+      }
     }
-    return true;
-  } catch (err) {
-    console.warn('[FCE] Health check error:', err);
-    return false;
+    if (attempt < maxRetries) {
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
+  return false;
 }

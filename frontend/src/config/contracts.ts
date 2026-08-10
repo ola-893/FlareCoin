@@ -56,7 +56,7 @@ export const CONTRACTS = {
   fAssetAdapter: import.meta.env.VITE_FASSET_ADAPTER_ADDRESS || '0x02D4F85301A2d1b3Bcc40BfD7937e6Fb2F5224a7',
   
   // FCE (Flare Compute Extension) - InstructionSender
-  instructionSender: import.meta.env.VITE_INSTRUCTION_SENDER_ADDRESS || '0xB4b31E86F020Cf7F1B81B35C2E2Bd2CF6DA1BE66',
+  instructionSender: import.meta.env.VITE_INSTRUCTION_SENDER_ADDRESS || '0xCaCFdd034D05419e2F5572E4F4170bd26caD05B7',
   
   // === Underlying Assets ===
   tokens: {

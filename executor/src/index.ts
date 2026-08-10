@@ -21,6 +21,7 @@ import { createPublicClient, http, type Address } from 'viem';
 import { XrplWatcher } from './xrplWatcher.js';
 import { FlareExecutor } from './flareExecutor.js';
 import { ProcessedTxStore } from './store.js';
+import { AutoRebalanceWatcher } from './autoRebalance.js';
 
 // ── Config ─────────────────────────────────────────────────────────────
 
@@ -37,6 +38,7 @@ function requireEnv(name: string): string {
 const EXECUTOR_PRIVATE_KEY = (process.env.EXECUTOR_PRIVATE_KEY || '0xce44c9cf317f66b5e3ea12ee1c92bb77a6dd2d02265b086eba66f8f338d5d7dc') as `0x${string}`;
 const COSTON2_RPC_URL = process.env.COSTON2_RPC_URL || 'https://coston2-api.flare.network/ext/C/rpc';
 const FASSET_ADAPTER_ADDRESS = (process.env.FASSET_ADAPTER_ADDRESS || '0x02D4F85301A2d1b3Bcc40BfD7937e6Fb2F5224a7') as Address;
+const PARENT_VAULT_ADDRESS = (process.env.PARENT_VAULT_ADDRESS || '0x01f64160E4928Eba5607aE294F9B66090Dc323B3') as Address;
 const FXRP_ADDRESS = (process.env.FXRP_ADDRESS || '0x0b6A3645c240605887a5532109323A3E12273dc7') as Address;
 const ASSET_MANAGER_ADDRESS = (process.env.ASSET_MANAGER_ADDRESS || '0xc1Ca88b937d0b528842F95d5731ffB586f4fbDFA') as Address;
 const XRPL_WSS_URL = process.env.XRPL_WSS_URL ?? 'wss://s.altnet.rippletest.net:51233';
@@ -106,7 +108,16 @@ async function main(): Promise<void> {
     pollIntervalMs: POLL_INTERVAL_MS,
   });
 
-  // 5. Wire up: when a payment is detected, process it
+  // 5. Initialize AutoRebalanceWatcher (with 20-attempt retry capability)
+  const rebalancer = new AutoRebalanceWatcher({
+    rpcUrl: COSTON2_RPC_URL,
+    executorPrivateKey: EXECUTOR_PRIVATE_KEY,
+    parentVaultAddress: PARENT_VAULT_ADDRESS,
+    maxRetries: 20,
+    checkIntervalMs: 30000,
+  });
+
+  // 6. Wire up: when a payment is detected, process it
   let processing = false; // simple mutex to serialize processing
   watcher.onPayment(async (payment) => {
     // Quick local check before acquiring the mutex
@@ -133,7 +144,8 @@ async function main(): Promise<void> {
 
       if (success) {
         console.log(`\n✅  Payment for tag ${payment.destinationTag} processed successfully!`);
-        console.log(`    The frontend should now advance from "Awaiting Deposit" to "Ready to Settle".\n`);
+        console.log(`    Triggering automatic vault rebalance check...`);
+        await rebalancer.checkAndRebalance();
       } else {
         console.log(`\n⚠️   Payment for tag ${payment.destinationTag} was NOT processed (see logs above).\n`);
       }
@@ -144,21 +156,24 @@ async function main(): Promise<void> {
     }
   });
 
-  // 6. Start watching
+  // 7. Start watching & rebalancing
   await watcher.start();
+  rebalancer.start();
 
   console.log('');
-  console.log('🔍  Executor is running. Watching for XRPL payments...');
+  console.log('🔍  Executor is running. Watching for XRPL payments & auto-rebalancing...');
   console.log(`    Core Vault  : ${coreVaultAddress}`);
   console.log(`    Adapter     : ${FASSET_ADAPTER_ADDRESS}`);
+  console.log(`    ParentVault : ${PARENT_VAULT_ADDRESS}`);
   console.log(`    Poll interval: ${POLL_INTERVAL_MS}ms`);
   console.log('');
   console.log('Press Ctrl+C to stop.\n');
 
-  // 7. Graceful shutdown
+  // 8. Graceful shutdown
   const shutdown = async () => {
     console.log('\n[Main] Shutting down...');
     await watcher.stop();
+    rebalancer.stop();
     console.log('[Main] Goodbye.');
     process.exit(0);
   };

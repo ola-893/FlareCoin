@@ -64,6 +64,14 @@ contract InstructionSender is IInstructionSender {
     }
 
     /**
+     * @notice Manually set extension ID (for linking pre-registered TEE machine extensions)
+     * @param _extensionId Extension ID to set
+     */
+    function setExplicitExtensionId(uint256 _extensionId) external {
+        extensionId = _extensionId;
+    }
+
+    /**
      * @notice Send instructions to TEE extension via registry
      * @param params Instruction parameters (opType, opCommand, message, etc.)
      * @return instructionId Generated instruction ID (bytes32)
@@ -73,9 +81,13 @@ contract InstructionSender is IInstructionSender {
     ) external payable override returns (bytes32 instructionId) {
         if (extensionId == 0) revert ExtensionIdNotSet();
 
+        // Dynamically request up to TEE_COUNT (or max active TEEs) to prevent TooMany() revert
+        address[] memory activeTees = machineRegistry.getActiveTeeMachines(extensionId);
+        uint256 count = activeTees.length < TEE_COUNT ? activeTees.length : TEE_COUNT;
+        if (count == 0) revert NoTeesAvailable();
+
         // Get random TEE machines for this extension
-        address[] memory teeIds = machineRegistry.getRandomTeeIds(extensionId, TEE_COUNT);
-        if (teeIds.length == 0) revert NoTeesAvailable();
+        address[] memory teeIds = machineRegistry.getRandomTeeIds(extensionId, count);
 
         // Send to registry (forwards msg.value for TEE fees)
         instructionId = registry.sendInstructions{value: msg.value}(teeIds, params);

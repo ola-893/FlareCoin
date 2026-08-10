@@ -120,11 +120,19 @@ contract MockRegistry is ITeeExtensionRegistry, ITeeMachineRegistry {
         return nextId;
     }
 
-    function getRandomTeeIds(uint256, /*extensionId*/ uint256 count) external pure override returns (address[] memory) {
+    function getRandomTeeIds(uint256, uint256 count) external view override returns (address[] memory) {
         address[] memory tees = new address[](count);
         for (uint256 i = 0; i < count; i++) {
-            tees[i] = address(uint160(0x1000 + i));
+            tees[i] = address(uint160(i + 1));
         }
+        return tees;
+    }
+
+    function getActiveTeeMachines(uint256) external pure override returns (address[] memory) {
+        address[] memory tees = new address[](3);
+        tees[0] = address(1);
+        tees[1] = address(2);
+        tees[2] = address(3);
         return tees;
     }
 }

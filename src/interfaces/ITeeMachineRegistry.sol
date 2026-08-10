@@ -14,4 +14,11 @@ interface ITeeMachineRegistry {
      * @return Array of TEE machine addresses
      */
     function getRandomTeeIds(uint256 extensionId, uint256 count) external view returns (address[] memory);
+
+    /**
+     * @notice Get all active TEE machine addresses for an extension
+     * @param extensionId Extension ID
+     * @return Array of active TEE machine addresses
+     */
+    function getActiveTeeMachines(uint256 extensionId) external view returns (address[] memory);
 }

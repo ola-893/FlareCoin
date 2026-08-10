@@ -17,6 +17,11 @@
     "dev": "npm start",
     "frontend": "npm run dev --prefix frontend",
     "executor": "npm start --prefix executor",
-    "fce-extension": "npm start --prefix fce-extension"
+    "fce-extension": "npm start --prefix fce-extension",
+    "rebalance:retry": "node script/trigger-rebalance.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "viem": "^2.55.11"
   }
 }

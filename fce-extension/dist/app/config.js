@@ -33,6 +33,6 @@ export const ENOSYS_CDP_ADAPTER = "0x276BBc877C3d50e50848E7ca8c68241D959F4800";
 // Extension version
 export const VERSION = "0.1.0";
 // Rebalance thresholds
-export const MIN_REBALANCE_AMOUNT = BigInt(1000000000000000000); // 1 FXRP
+export const MIN_REBALANCE_AMOUNT = BigInt(1000); // 1000 wei for testnet flexibility
 export const SLIPPAGE_TOLERANCE_BPS = 50; // 0.5%
 export const MIN_TWAP_WINDOW = 24 * 60 * 60; // 24 hours in seconds
