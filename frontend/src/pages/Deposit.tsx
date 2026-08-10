@@ -333,7 +333,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
       const teeResult: TeeActionResult = await requestSignedRebalance({
         vaultAddress: CONTRACTS.parentVault,
         idleAssets: xrplAmount ? BigInt(Math.floor(parseFloat(xrplAmount) * 1e6)) : 0n,
-        approvedStrategies: [CONTRACTS.strategies.enosysFxrp],
+        approvedStrategies: [CONTRACTS.strategies.ftsoV2Delegation, CONTRACTS.strategies.sparkDexLp],
         liquidityBufferBps: 1000, // 10% buffer
       });
 
