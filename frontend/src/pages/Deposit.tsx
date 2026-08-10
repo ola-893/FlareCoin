@@ -1,4 +1,5 @@
 import React, {useState, useEffect, useMemo} from 'react';
+import {useNavigate} from 'react-router-dom';
 import {useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useBalance} from 'wagmi';
 import {decodeEventLog, parseUnits, formatUnits} from 'viem';
 import {motion, AnimatePresence} from 'motion/react';
@@ -59,6 +60,7 @@ const useCoreVaultAddress = () => {
 };
 
 export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
+  const navigate = useNavigate();
   const {address, isConnected} = useAccount();
 
   // Flow state
@@ -357,10 +359,24 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 
   // Write: Execute rebalance to deploy idle capital to strategy
   const {writeContract: writeRebalance, data: rebalanceHash, isPending: isRebalancing, error: rebalanceError} = useWriteContract();
-  const {isLoading: isRebalanceConfirming, error: rebalanceReceiptError} = useWaitForTransactionReceipt({hash: rebalanceHash});
+  const {isLoading: isRebalanceConfirming, isSuccess: isRebalanceSuccess, error: rebalanceReceiptError} = useWaitForTransactionReceipt({hash: rebalanceHash});
 
   const [isRequestingSignature, setIsRequestingSignature] = useState(false);
   const [fceError, setFceError] = useState<string | null>(null);
+  const [deploySuccess, setDeploySuccess] = useState(false);
+
+  // Auto-route to Dashboard once yield strategy deployment confirms
+  useEffect(() => {
+    if (rebalanceHash && isRebalanceSuccess && !deploySuccess) {
+      setDeploySuccess(true);
+      setAutoDeployStatus('success');
+      localStorage.removeItem('flux-auto-deploy');
+      const timer = setTimeout(() => {
+        navigate('/dashboard');
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [rebalanceHash, isRebalanceSuccess, deploySuccess, navigate]);
 
   // ─── Auto-deploy fallback state ──────────────────────────────────────────
   const AUTO_DEPLOY_SECONDS = 300; // 5 minutes default
@@ -897,6 +913,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               onSkip={handleSkipDeploy}
               isDeploying={isRebalancing || isRequestingSignature}
               isConfirming={isRebalanceConfirming}
+              isSuccess={isRebalanceSuccess || deploySuccess}
               error={fceError || rebalanceError?.message || rebalanceReceiptError?.message}
               isRequestingSignature={isRequestingSignature}
             />
@@ -1477,24 +1494,46 @@ const StepDeployToStrategy: React.FC<{
   onSkip: () => void;
   isDeploying: boolean;
   isConfirming: boolean;
+  isSuccess?: boolean;
   error?: string | null;
   isRequestingSignature?: boolean;
-}> = ({xrplAmount, onDeploy, onSkip, isDeploying, isConfirming, error, isRequestingSignature}) => (
+}> = ({xrplAmount, onDeploy, onSkip, isDeploying, isConfirming, isSuccess, error, isRequestingSignature}) => (
   <motion.div
     initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -20}}
     className="glass-panel p-6 sm:p-8 rounded-3xl border border-[#1E1E1E]/15 shadow-soft-editorial bg-white/60"
   >
     <div className="text-center mb-8">
-      <div className="w-16 h-16 rounded-full bg-[#E1BAC2]/10 border border-[#E1BAC2]/30 flex items-center justify-center mx-auto mb-4">
-        <Zap className="w-8 h-8 text-[#E1BAC2]" />
+      <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border transition-all ${
+        isSuccess ? 'bg-emerald-100 border-emerald-300' : 'bg-[#E1BAC2]/10 border-[#E1BAC2]/30'
+      }`}>
+        {isSuccess ? <Check className="w-8 h-8 text-emerald-600" /> : <Zap className="w-8 h-8 text-[#E1BAC2]" />}
       </div>
       <h3 className="text-xl font-extrabold text-[#1E1E1E] mb-2" style={{fontFamily: 'Manrope, sans-serif'}}>
-        Deploy to Yield Strategy
+        {isSuccess ? 'Yield Strategy Deployed Successfully!' : 'Deploy to Yield Strategy'}
       </h3>
       <p className="text-xs text-[#4A4A4A]">
-        Your FXRP is in the vault. Deploy it now to start earning yield automatically.
+        {isSuccess
+          ? 'Your capital is now active and auto-compounding in the vault strategy. Redirecting to Dashboard...'
+          : 'Your FXRP is in the vault. Deploy it now to start earning yield automatically.'}
       </p>
     </div>
+
+    {/* Success Banner */}
+    {isSuccess && (
+      <motion.div
+        initial={{opacity: 0, scale: 0.95}}
+        animate={{opacity: 1, scale: 1}}
+        className="p-4 rounded-2xl bg-emerald-50 border border-emerald-300 text-center mb-6 shadow-sm"
+      >
+        <div className="flex items-center justify-center gap-2 text-emerald-800 font-bold text-sm mb-1">
+          <ShieldCheck className="w-5 h-5 text-emerald-600" />
+          <span>Yield Strategy Active & Auto-Compounding</span>
+        </div>
+        <p className="text-xs text-emerald-700 font-mono">
+          🚀 Routing to your Dashboard in 2 seconds...
+        </p>
+      </motion.div>
+    )}
 
     {/* Deposit Summary */}
     <div className="p-4 rounded-2xl bg-[#F5F5F3] border border-[#1E1E1E]/10 mb-6 space-y-3">
@@ -1533,33 +1572,40 @@ const StepDeployToStrategy: React.FC<{
       </div>
     </div>
 
-    {error && (
+    {error && !isSuccess && (
       <div className="p-3 rounded-xl bg-red-50 border border-red-200 mb-6">
         <p className="text-xs text-red-700 font-mono break-all">{error}</p>
       </div>
     )}
 
-    <div className="grid grid-cols-2 gap-3">
-      <button
-        onClick={onDeploy}
-        disabled={isDeploying || isConfirming}
-        className="py-3.5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-[#000000] transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50"
-      >
-        {isRequestingSignature ? (
-          <><RefreshCw className="w-4 h-4 animate-spin" /><span>Requesting TEE Signature...</span></>
-        ) : isDeploying || isConfirming ? (
-          <><RefreshCw className="w-4 h-4 animate-spin" /><span>Deploying...</span></>
-        ) : (
-          <><Zap className="w-4 h-4 text-[#E1BAC2]" /><span>Deploy to Strategy</span></>
-        )}
-      </button>
-      <button
-        onClick={onSkip}
-        className="py-3.5 rounded-full border border-[#1E1E1E]/20 text-[#1E1E1E] text-[11px] font-bold uppercase tracking-[0.15em] hover:border-[#E1BAC2] transition-all"
-      >
-        Skip for Now
-      </button>
-    </div>
+    {isSuccess ? (
+      <div className="w-full py-3.5 rounded-full bg-emerald-600 text-white text-xs font-bold uppercase tracking-[0.15em] flex items-center justify-center gap-2 shadow-md">
+        <Check className="w-4 h-4" />
+        <span>Redirecting to Dashboard...</span>
+      </div>
+    ) : (
+      <div className="grid grid-cols-2 gap-3">
+        <button
+          onClick={onDeploy}
+          disabled={isDeploying || isConfirming}
+          className="py-3.5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-[#000000] transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50"
+        >
+          {isRequestingSignature ? (
+            <><RefreshCw className="w-4 h-4 animate-spin" /><span>Requesting TEE Signature...</span></>
+          ) : isDeploying || isConfirming ? (
+            <><RefreshCw className="w-4 h-4 animate-spin" /><span>Deploying...</span></>
+          ) : (
+            <><Zap className="w-4 h-4 text-[#E1BAC2]" /><span>Deploy to Strategy</span></>
+          )}
+        </button>
+        <button
+          onClick={onSkip}
+          className="py-3.5 rounded-full border border-[#1E1E1E]/20 text-[#1E1E1E] text-[11px] font-bold uppercase tracking-[0.15em] hover:border-[#E1BAC2] transition-all"
+        >
+          Skip for Now
+        </button>
+      </div>
+    )}
   </motion.div>
 );
 
