@@ -44,8 +44,9 @@ export const VERSION = "0.1.0";
 
 // Rebalance thresholds
 // NOTE: FXRP is a 6-decimal token (matches XRP drops). The frontend and executor
-// both send/receive idle assets in 6-decimal scale (amount * 1e6), so the minimum
-// must be 1_000_000 (= 1 FXRP at 6 decimals), NOT 1e18.
-export const MIN_REBALANCE_AMOUNT = BigInt(1_000_000); // 1 FXRP (6 decimals)
+// both send/receive idle assets in 6-decimal scale (amount * 1e6). Minimum is set
+// to 10_000 (= 0.01 FXRP) so small test balances (>= 0.1 FXRP) can still deploy;
+// the strategy adapters accept any nonzero amount.
+export const MIN_REBALANCE_AMOUNT = BigInt(10_000); // 0.01 FXRP (6 decimals)
 export const SLIPPAGE_TOLERANCE_BPS = 50; // 0.5%
 export const MIN_TWAP_WINDOW = 24 * 60 * 60; // 24 hours in seconds

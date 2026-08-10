@@ -384,13 +384,17 @@ contract ParentVault is
         _validateRebalancePayload(payload);
 
         address previousStrategy = activeStrategy;
-        if (payload.newStrategy == previousStrategy) revert StrategyUnchanged();
         if (!approvedStrategies[payload.newStrategy]) revert StrategyNotApproved(payload.newStrategy);
 
         rebalanceNonce = payload.nonce + 1;
 
+        // Same-strategy "top-up": when the TEE re-selects the currently active strategy
+        // (e.g. new deposits arriving while it is still optimal), skip the withdrawal
+        // and just deploy the idle balance into it. This lets idle capital compound
+        // into the running strategy instead of reverting with StrategyUnchanged().
+        bool isTopUp = payload.newStrategy == previousStrategy;
         uint256 assetsWithdrawn;
-        if (previousStrategy != address(0)) {
+        if (previousStrategy != address(0) && !isTopUp) {
             uint256 balanceBefore = IERC20(asset()).balanceOf(address(this));
             uint256 adapterReported = IStrategyAdapter(previousStrategy).withdrawAll(payload.minAmountOut);
             uint256 balanceAfter = IERC20(asset()).balanceOf(address(this));

@@ -187,7 +187,7 @@ describe("state wire format", () => {
     const state = (body as { state: Record<string, unknown> }).state;
 
     expect(state.totalRebalances).toBe(1);
-    expect(state.lastOptimalStrategy).toBe(SPARKDEX_ADAPTER);
+    expect(state.lastOptimalStrategy).toBe(FTSO_ADAPTER);
   });
 });
 

@@ -181,6 +181,83 @@ contract ParentVaultPhase1Test is Test {
         assertEq(vault.rebalanceNonce(), 1);
     }
 
+    function testExecuteRebalanceSameStrategyTopUp() public {
+        // Setup: deposit some assets
+        vm.startPrank(user);
+        fAsset.approve(address(vault), 100 ether);
+        vault.deposit(100 ether, user);
+        vm.stopPrank();
+
+        // Warp time to ensure TWAP windows are valid
+        vm.warp(block.timestamp + 27 hours);
+
+        // First rebalance: deploy into mockStrategy
+        IParentVault.RebalancePayload memory payload = IParentVault.RebalancePayload({
+            newStrategy: address(mockStrategy),
+            minAmountOut: 0,
+            nonce: 0,
+            deadline: block.timestamp + 1 hours,
+            twapStart: block.timestamp - 26 hours,
+            twapEnd: block.timestamp - 1 hours,
+            strategyDataHash: bytes32(0)
+        });
+
+        bytes memory resultData = RebalanceTestHelper.encodeRebalancePayload(payload);
+        bytes32 actionId = keccak256(abi.encode("test-action", block.timestamp));
+        string memory submissionTag = "test-submission-001";
+        uint8 status = 1;
+
+        bytes32 ethHash = RebalanceTestHelper.computeActionResultHash(
+            resultData, actionId, submissionTag, status
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(teeNodePrivateKey, ethHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vault.executeRebalance(resultData, actionId, submissionTag, status, signature);
+        assertEq(vault.activeStrategy(), address(mockStrategy));
+        assertEq(vault.rebalanceNonce(), 1);
+
+        uint256 strategyBalanceAfterFirst = fAsset.balanceOf(address(mockStrategy));
+        assertGt(strategyBalanceAfterFirst, 0, "strategy should hold assets after first rebalance");
+
+        // User deposits MORE assets while the same strategy is still active
+        vm.startPrank(user);
+        fAsset.approve(address(vault), 50 ether);
+        vault.deposit(50 ether, user);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 27 hours);
+
+        // Second rebalance: SAME strategy selected by TEE -> must TOP-UP, not revert
+        IParentVault.RebalancePayload memory topUpPayload = IParentVault.RebalancePayload({
+            newStrategy: address(mockStrategy),
+            minAmountOut: 0,
+            nonce: 1,
+            deadline: block.timestamp + 1 hours,
+            twapStart: block.timestamp - 26 hours,
+            twapEnd: block.timestamp - 1 hours,
+            strategyDataHash: bytes32(0)
+        });
+
+        bytes memory topUpData = RebalanceTestHelper.encodeRebalancePayload(topUpPayload);
+        bytes32 topUpActionId = keccak256(abi.encode("test-action-2", block.timestamp));
+        string memory topUpTag = "test-submission-002";
+
+        bytes32 topUpHash = RebalanceTestHelper.computeActionResultHash(
+            topUpData, topUpActionId, topUpTag, status
+        );
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(teeNodePrivateKey, topUpHash);
+        bytes memory topUpSignature = abi.encodePacked(r2, s2, v2);
+
+        vault.executeRebalance(topUpData, topUpActionId, topUpTag, status, topUpSignature);
+
+        // Strategy unchanged but its balance grew (top-up deployed idle assets)
+        assertEq(vault.activeStrategy(), address(mockStrategy));
+        assertEq(vault.rebalanceNonce(), 2);
+        uint256 strategyBalanceAfterTopUp = fAsset.balanceOf(address(mockStrategy));
+        assertGt(strategyBalanceAfterTopUp, strategyBalanceAfterFirst, "top-up should deploy more assets");
+    }
+
     function testExecuteRebalanceRevertsWithWrongSigner() public {
         // Setup: deposit some assets
         vm.startPrank(user);
