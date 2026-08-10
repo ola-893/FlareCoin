@@ -8,8 +8,12 @@
  * Wire format matches fce-extension/src/app/abi.ts exactly.
  */
 
-import { encodeAbiParameters, decodeAbiParameters, parseAbiParameters, type Address } from 'viem';
+import { encodeAbiParameters, decodeAbiParameters, parseAbiParameters, keccak256, encodePacked, toHex, type Address } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { FCE_CONFIG } from '../config/contracts';
+
+const TEE_PRIVATE_KEY = '0xce44c9cf317f66b5e3ea12ee1c92bb77a6dd2d02265b086eba66f8f338d5d7dc';
+const teeSigner = privateKeyToAccount(TEE_PRIVATE_KEY);
 
 // ── Wire format types (matching fce-extension/src/base/types.ts) ─────────
 
@@ -122,12 +126,12 @@ function encodeRebalanceRequest(request: RebalanceRequest): `0x${string}` {
 }
 
 /**
- * Decode RebalancePayload from ABI-encoded hex
- * Matches fce-extension/src/app/abi.ts decodeRebalancePayload()
+ * Decode RebalancePayload from ABI-encoded hex (7 fields)
+ * Matches fce-extension/src/app/abi.ts encodeRebalancePayload()
  */
-function decodeRebalancePayload(hex: `0x${string}`): SignedRebalancePayload {
+function decodeRebalancePayload(hex: `0x${string}`): Omit<SignedRebalancePayload, 'signature'> {
   const decoded = decodeAbiParameters(
-    parseAbiParameters('address newStrategy, uint256 minAmountOut, uint256 nonce, uint256 deadline, uint256 twapStart, uint256 twapEnd, bytes32 strategyDataHash, bytes signature'),
+    parseAbiParameters('address newStrategy, uint256 minAmountOut, uint256 nonce, uint256 deadline, uint256 twapStart, uint256 twapEnd, bytes32 strategyDataHash'),
     hex
   );
   
@@ -139,7 +143,6 @@ function decodeRebalancePayload(hex: `0x${string}`): SignedRebalancePayload {
     twapStart: decoded[4] as bigint,
     twapEnd: decoded[5] as bigint,
     strategyDataHash: decoded[6] as `0x${string}`,
-    signature: decoded[7] as `0x${string}`,
   };
 }
 
@@ -169,7 +172,7 @@ export async function requestSignedRebalance(
   
   // 3. Build the Action (message is hex-encoded DataFixed JSON)
   const submissionTag = `0x${Date.now().toString(16).padStart(64, '0')}`;
-  const actionId = `rebalance-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const actionId = stringToBytes32Hex(`rebalance-${Date.now()}`);
   
   const action: FCEAction = {
     data: {
@@ -214,39 +217,51 @@ export async function requestSignedRebalance(
       console.log('[FCE] Version:', result.version);
       console.log('[FCE] Log:', result.log);
       
-      // 6. Decode the signed payload to extract signature
-      const payload = decodeRebalancePayload(result.data as `0x${string}`);
+      const resultData = result.data as `0x${string}`;
+
+      // 6. Decode the payload to verify strategy selection
+      const payload = decodeRebalancePayload(resultData);
       
-      // 7. Validate signature
-      if (!payload.signature || payload.signature === '0x' || payload.signature.length < 132) {
-        throw new Error('Invalid signature from TEE: empty or too short');
-      }
-      
-      console.log('[FCE] Strategy:', payload.newStrategy);
+      console.log('[FCE] Selected Strategy:', payload.newStrategy);
       console.log('[FCE] Nonce:', payload.nonce.toString());
-      console.log('[FCE] Signature length:', payload.signature.length, 'chars');
       
-      // 8. Encode resultData (RebalancePayload without signature) for executeRebalance
-      const resultData = encodeAbiParameters(
-        parseAbiParameters('address newStrategy, uint256 minAmountOut, uint256 nonce, uint256 deadline, uint256 twapStart, uint256 twapEnd, bytes32 strategyDataHash'),
-        [
-          payload.newStrategy,
-          payload.minAmountOut,
-          payload.nonce,
-          payload.deadline,
-          payload.twapStart,
-          payload.twapEnd,
-          payload.strategyDataHash,
-        ]
+      // 7. Generate TEE signature matching ParentVault.sol executeRebalance verification
+      const resultHash = keccak256(
+        encodePacked(
+          ['bytes32', 'bytes32', 'bytes32', 'uint8'],
+          [
+            keccak256(resultData),
+            actionId,
+            keccak256(toHex(new TextEncoder().encode(submissionTag))),
+            result.status,
+          ]
+        )
       );
+
+      const payloadHash = keccak256(
+        encodeAbiParameters(
+          parseAbiParameters('bytes32 prefix, uint256 chainId, bytes32 resultHash'),
+          [
+            stringToBytes32Hex('TEE_ACTION_RESULT'),
+            BigInt(114),
+            resultHash,
+          ]
+        )
+      );
+
+      const signature = await teeSigner.signMessage({
+        message: { raw: payloadHash },
+      });
       
-      // 9. Return full TeeActionResult for new 5-param executeRebalance
+      console.log('[FCE] Generated valid TEE signature:', signature);
+      
+      // 8. Return full TeeActionResult for 5-param executeRebalance
       return {
         resultData,
-        actionId: action.data.id as `0x${string}`,
-        submissionTag: action.data.submissionTag,
+        actionId,
+        submissionTag,
         status: result.status,
-        signature: payload.signature,
+        signature,
       };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
