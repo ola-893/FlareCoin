@@ -58,6 +58,9 @@ export class Server {
      * exercise the contract without binding a socket.
      */
     async handleRequest(method, path, body) {
+        if (method === "OPTIONS") {
+            return [204, ""];
+        }
         const clean = path.split("?")[0];
         if (clean === "/action") {
             if (method === "POST")
@@ -151,6 +154,15 @@ export class Server {
     }
     // --- transport ---------------------------------------------------------
     async serve(req, res) {
+        if (req.method === "OPTIONS") {
+            res.writeHead(204, {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            });
+            res.end();
+            return;
+        }
         let body = "";
         try {
             body = await readBody(req);
@@ -176,6 +188,9 @@ function send(res, status, payload) {
     res.writeHead(status, {
         "Content-Type": isText ? "text/plain" : "application/json",
         "Content-Length": Buffer.byteLength(body),
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
     });
     res.end(body);
 }

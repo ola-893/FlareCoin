@@ -87,6 +87,10 @@ export class Server {
     path: string,
     body: string,
   ): Promise<[number, unknown]> {
+    if (method === "OPTIONS") {
+      return [204, ""];
+    }
+
     const clean = path.split("?")[0];
 
     if (clean === "/action") {
@@ -196,6 +200,16 @@ export class Server {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
+
     let body = "";
     try {
       body = await readBody(req);
@@ -227,6 +241,9 @@ function send(res: http.ServerResponse, status: number, payload: unknown): void 
   res.writeHead(status, {
     "Content-Type": isText ? "text/plain" : "application/json",
     "Content-Length": Buffer.byteLength(body),
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(body);
 }
