@@ -79,6 +79,9 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 
   // Always start at SELECT phase — but remember any previously saved tag.
   const [savedTag, setSavedTag] = useState<string | null>(null);
+  // True while the pending tag registration is an "escape" to a brand-new tag
+  // (used so a failed registration retries the same intent).
+  const [isReservingNewTag, setIsReservingNewTag] = useState(false);
 
   // ─── Tag Activation Cooldown ──────────────────────────────────────────────
   // Flare's MintingTagManager has a cooldown after setAllowedExecutor is called.
@@ -150,7 +153,13 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   // A tag is ready once its activation cooldown deadline has passed. Derived from
   // the deadline (and remaining seconds) so the send-instructions always appear at
   // 0:00 — independent of any single state update being missed.
-  const isTagReady = tagReady || (tagCooldownDeadline !== null && (Date.now() >= tagCooldownDeadline || tagCooldownRemaining <= 0));
+  // When no cooldown is tracked at all (e.g. reusing a tag reserved in a previous
+  // session), the tag is already activated — treat it as ready immediately instead
+  // of showing a stuck "Activating tag… 0s remaining" state.
+  const isTagReady = tagReady
+    || tagCooldownDeadline === null
+    || Date.now() >= tagCooldownDeadline
+    || tagCooldownRemaining <= 0;
 
   // ─── FAsset Flow Hooks ────────────────────────────────────────────────────
   const {data: userReservedTags, isLoading: isTagsLoading} = useReadContract({
@@ -162,6 +171,42 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   });
   const existingTags = (userReservedTags as bigint[] | undefined) ?? [];
   const hasExistingTag = existingTags.length > 0 || !!savedTag;
+
+  // The tag this session deposits to: prefer the saved/active tag (if it is
+  // still reserved on-chain), otherwise the first reserved tag.
+  const candidateTag = useMemo(() => {
+    if (savedTag && existingTags.some(t => t.toString() === savedTag)) return savedTag;
+    return existingTags.length > 0 ? existingTags[0].toString() : null;
+  }, [savedTag, existingTags]);
+
+  // Surface any unclaimed deposit already sitting on the candidate tag (e.g. a
+  // payment that arrived in an earlier session) on the SELECT screen, so the
+  // user isn't surprised by it later and can settle it or move to a fresh tag.
+  const {data: candidateDepositIdRaw} = useReadContract({
+    address: CONTRACTS.fAssetAdapter as `0x${string}`,
+    abi: FASSET_ADAPTER_ABI,
+    functionName: 'pendingDepositForTag',
+    args: candidateTag ? [BigInt(candidateTag)] : undefined,
+    query: {
+      enabled: !!address && step === 'SELECT' && !!candidateTag && depositFlow === 'FASSET',
+      refetchInterval: 5000,
+    },
+  });
+  const candidateDepositId = candidateDepositIdRaw as `0x${string}` | undefined;
+  const hasCandidateDeposit = !!candidateDepositId
+    && candidateDepositId !== '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+  const {data: candidateMintRaw} = useReadContract({
+    address: CONTRACTS.fAssetAdapter as `0x${string}`,
+    abi: FASSET_ADAPTER_ABI,
+    functionName: 'pendingDirectMints',
+    args: hasCandidateDeposit ? [candidateDepositId] : undefined,
+    query: {
+      enabled: hasCandidateDeposit && step === 'SELECT',
+      refetchInterval: 5000,
+    },
+  });
+  const candidatePendingAssets = candidateMintRaw ? BigInt((candidateMintRaw as any)[2]) : undefined;
 
   const saveState = (s: DepositStep, tag?: string, depId?: string) => {
     localStorage.setItem('flux-deposit-state', JSON.stringify({
@@ -314,20 +359,39 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   }, [isSettling]);
 
   const handleReserveTag = () => {
-    if (existingTags.length > 0) {
-      const existingTag = existingTags[0].toString();
-      setReservedTag(existingTag);
-      saveState('AWAITING_DEPOSIT', existingTag);
+    setIsReservingNewTag(false);
+    if (candidateTag) {
+      setReservedTag(candidateTag);
+      // A previously registered tag is already activated — skip the
+      // fresh-registration cooldown (unless one is still counting down).
+      if (!tagCooldownDeadline || tagCooldownDeadline <= Date.now()) setTagReady(true);
+      saveState('AWAITING_DEPOSIT', candidateTag);
       setStep('AWAITING_DEPOSIT');
       return;
     }
     if (savedTag) {
       setReservedTag(savedTag);
+      if (!tagCooldownDeadline || tagCooldownDeadline <= Date.now()) setTagReady(true);
       saveState('AWAITING_DEPOSIT', savedTag);
       setStep('AWAITING_DEPOSIT');
       return;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerTag({
+      address: CONTRACTS.fAssetAdapter,
+      abi: FASSET_ADAPTER_ABI as any,
+      functionName: 'registerMintingTag',
+      value: reservationFee,
+      gas: 500_000n,
+    } as any);
+    setStep('RESERVE_TAG');
+  };
+
+  // Reserves a brand-new minting tag so a user who doesn't recognize an existing
+  // pending deposit on their current tag can start a clean deposit flow instead.
+  const handleReserveNewTag = () => {
+    setIsReservingNewTag(true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerTag({
       address: CONTRACTS.fAssetAdapter,
@@ -365,18 +429,24 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   const [fceError, setFceError] = useState<string | null>(null);
   const [deploySuccess, setDeploySuccess] = useState(false);
 
-  // Auto-route to Dashboard once yield strategy deployment confirms
+  // Auto-route to Dashboard once yield strategy deployment confirms.
+  // Split into two effects: the first flips deploySuccess, the second runs the
+  // redirect. Putting the timer in the same effect as the setDeploySuccess(true)
+  // state change would cancel it via the effect cleanup (deploySuccess is a
+  // dependency), so the redirect never fired.
   useEffect(() => {
     if (rebalanceHash && isRebalanceSuccess && !deploySuccess) {
       setDeploySuccess(true);
       setAutoDeployStatus('success');
       localStorage.removeItem('flux-auto-deploy');
-      const timer = setTimeout(() => {
-        onBack();
-      }, 1500);
-      return () => clearTimeout(timer);
     }
-  }, [rebalanceHash, isRebalanceSuccess, deploySuccess, onBack]);
+  }, [rebalanceHash, isRebalanceSuccess, deploySuccess]);
+
+  useEffect(() => {
+    if (!deploySuccess) return;
+    const timer = setTimeout(() => navigate('/'), 2000);
+    return () => clearTimeout(timer);
+  }, [deploySuccess, navigate]);
 
   // ─── Auto-deploy fallback state ──────────────────────────────────────────
   const AUTO_DEPLOY_SECONDS = 300; // 5 minutes default
@@ -848,6 +918,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               asset={asset}
               setAsset={setAsset}
               onReserve={handleReserveTag}
+              onReserveNewTag={handleReserveNewTag}
               isRegistering={isRegistering || isRegisterConfirming}
               isFeeLoading={isFeeLoading && !feeError}
               feeError={!!feeError}
@@ -855,6 +926,8 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               hasEnoughBalance={hasEnoughBalance}
               isTagsLoading={isTagsLoading}
               hasExistingTag={hasExistingTag}
+              pendingTag={candidateTag}
+              pendingAssets={candidatePendingAssets}
             />
           )}
 
@@ -863,7 +936,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               key="reserving"
               isConfirming={isRegisterConfirming}
               error={registerError?.message || registerReceiptError?.message}
-              onRetry={handleReserveTag}
+              onRetry={isReservingNewTag ? handleReserveNewTag : handleReserveTag}
               onBack={() => setStep('SELECT')}
             />
           )}
@@ -892,7 +965,9 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               xrplTxHash={xrplTxHash}
               xrplAmount={xrplAmount}
               asset={asset}
+              tag={reservedTag}
               onSettle={handleSettle}
+              onReserveNewTag={handleReserveNewTag}
               isSettling={isSettling || isSettleConfirming}
               isDepositProcessedOnChain={isDepositProcessedOnChain}
               isPendingDirectMintLoading={isPendingDirectMintLoading}
@@ -1063,6 +1138,7 @@ const StepSelectAsset: React.FC<{
   asset: 'XRP' | 'BTC';
   setAsset: (a: 'XRP' | 'BTC') => void;
   onReserve: () => void;
+  onReserveNewTag: () => void;
   isRegistering: boolean;
   isFeeLoading: boolean;
   feeError: boolean;
@@ -1070,7 +1146,9 @@ const StepSelectAsset: React.FC<{
   hasEnoughBalance: boolean;
   isTagsLoading: boolean;
   hasExistingTag: boolean;
-}> = ({asset, setAsset, onReserve, isRegistering, isFeeLoading, feeError, reservationFee, hasEnoughBalance, isTagsLoading, hasExistingTag}) => (
+  pendingTag: string | null;
+  pendingAssets: bigint | undefined;
+}> = ({asset, setAsset, onReserve, onReserveNewTag, isRegistering, isFeeLoading, feeError, reservationFee, hasEnoughBalance, isTagsLoading, hasExistingTag, pendingTag, pendingAssets}) => (
   <motion.div
     initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -20}}
     className="glass-panel p-6 sm:p-8 rounded-3xl border border-[#1E1E1E]/15 shadow-soft-editorial bg-white/60"
@@ -1132,6 +1210,30 @@ const StepSelectAsset: React.FC<{
       </div>
     )}
 
+    {pendingTag && pendingAssets !== undefined && pendingAssets > 0n && (
+      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 mb-6">
+        <div className="flex items-start gap-2">
+          <Clock className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+          <div className="text-xs text-amber-800">
+            <div className="font-bold mb-1">
+              Unclaimed deposit found on tag #{pendingTag}
+            </div>
+            <p className="text-[10px] leading-relaxed">
+              {(Number(pendingAssets) / 1e6).toFixed(6)} FXRP was processed for this tag and is ready to
+              settle. You can claim it below, or reserve a fresh tag for a new deposit.
+            </p>
+            <button
+              onClick={onReserveNewTag}
+              disabled={isRegistering}
+              className="mt-2 text-[10px] font-bold text-amber-900 underline underline-offset-2 hover:text-amber-950 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              This isn't mine — reserve a new tag instead
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
     <button
       onClick={onReserve}
       disabled={isRegistering || isTagsLoading || (!isFeeLoading && !hasEnoughBalance && reservationFee > 0n)}
@@ -1142,7 +1244,7 @@ const StepSelectAsset: React.FC<{
       ) : isFeeLoading || isTagsLoading ? (
         <><RefreshCw className="w-4 h-4 animate-spin" /><span>Loading...</span></>
       ) : (
-        <><span>{hasExistingTag ? 'Continue to Deposit' : 'Reserve Minting Tag'}</span><ArrowRight className="w-4 h-4" /></>
+        <><span>{hasExistingTag ? (pendingAssets && pendingAssets > 0n ? 'Settle & Claim Shares' : 'Continue to Deposit') : 'Reserve Minting Tag'}</span><ArrowRight className="w-4 h-4" /></>
       )}
     </button>
   </motion.div>
@@ -1353,13 +1455,15 @@ const StepReadyToSettle: React.FC<{
   xrplTxHash: string | null;
   xrplAmount: string | null;
   asset: 'XRP' | 'BTC';
+  tag?: string | null;
   onSettle: () => void;
+  onReserveNewTag: () => void;
   isSettling: boolean;
   isDepositProcessedOnChain: boolean;
   isPendingDirectMintLoading: boolean;
   settlementError?: string | null;
   error?: string | null;
-}> = ({depositId, xrplTxHash, xrplAmount, asset, onSettle, isSettling, isDepositProcessedOnChain, isPendingDirectMintLoading, settlementError, error}) => {
+}> = ({depositId, xrplTxHash, xrplAmount, asset, tag, onSettle, onReserveNewTag, isSettling, isDepositProcessedOnChain, isPendingDirectMintLoading, settlementError, error}) => {
   const xrplExplorerUrl = xrplTxHash ? `https://testnet.xrpl.org/transactions/${xrplTxHash}` : null;
   const hasError = !!error;
 
@@ -1384,22 +1488,30 @@ const StepReadyToSettle: React.FC<{
           )}
         </div>
         <h3 className="text-xl font-extrabold text-[#1E1E1E] mb-2" style={{fontFamily: 'Manrope, sans-serif'}}>
-          {hasError ? 'Settlement Failed' : isWaitingForExecutor ? 'Awaiting Executor Processing...' : 'FAssets received!'}
+          {hasError ? 'Settlement Failed' : isWaitingForExecutor ? 'Awaiting Executor Processing...' : 'Deposit ready to settle'}
         </h3>
         <p className="text-xs text-[#4A4A4A]">
           {hasError
             ? 'The settlement transaction could not be completed. You can safely retry — your funds are still in the adapter.'
             : isWaitingForExecutor
               ? 'The executor is processing your XRPL deposit on-chain. This usually takes 15-30 seconds...'
-              : 'Your deposit has been processed. Click below to settle and receive your Flux tokens.'}
+              : tag
+                ? `FXRP has been minted on-chain for your tag #${tag}. Settle to move it into your vault and receive Flux shares.`
+                : 'Your deposit has been processed. Click below to settle and receive your Flux tokens.'}
         </p>
       </div>
 
       <div className="p-4 rounded-2xl bg-[#F5F5F3] border border-[#1E1E1E]/10 mb-6 space-y-3">
         {xrplAmount && (
           <div className="flex items-center justify-between text-xs">
-            <span className="text-[#4A4A4A]">Amount Deposited</span>
-            <span className="font-mono font-bold text-[#1E1E1E]">{xrplAmount} {asset}</span>
+            <span className="text-[#4A4A4A]">Amount</span>
+            <span className="font-mono font-bold text-[#1E1E1E]">{xrplAmount} {asset === 'XRP' ? 'FXRP' : 'FBTC'}</span>
+          </div>
+        )}
+        {tag && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-[#4A4A4A]">Minting Tag</span>
+            <span className="font-mono font-bold text-[#1E1E1E]">#{tag}</span>
           </div>
         )}
         <div className="flex items-center justify-between text-xs">
@@ -1454,6 +1566,22 @@ const StepReadyToSettle: React.FC<{
           <><span>{error ? 'Retry Settlement' : 'Settle & Receive Shares'}</span><ArrowRight className="w-4 h-4" /></>
         )}
       </button>
+
+      {!isWaitingForExecutor && !hasError && !isSettling && (
+        <div className="mt-4 pt-3 border-t border-[#1E1E1E]/10">
+          <button
+            onClick={onReserveNewTag}
+            className="w-full text-[10px] font-bold text-[#4A4A4A] underline underline-offset-2 hover:text-[#1E1E1E] transition-colors"
+          >
+            This isn't my deposit — reserve a new tag
+          </button>
+          {tag && (
+            <p className="text-[9px] text-center text-[#4A4A4A]/70 mt-1.5 font-mono">
+              The deposit on tag #{tag} stays on-chain and remains available.
+            </p>
+          )}
+        </div>
+      )}
 
       {isWaitingForExecutor && (
         <p className="text-[9px] text-center text-[#4A4A4A] mt-3 font-mono">
@@ -1511,11 +1639,11 @@ const StepDeployToStrategy: React.FC<{
         {isSuccess ? <Check className="w-8 h-8 text-emerald-600" /> : <Zap className="w-8 h-8 text-[#E1BAC2]" />}
       </div>
       <h3 className="text-xl font-extrabold text-[#1E1E1E] mb-2" style={{fontFamily: 'Manrope, sans-serif'}}>
-        {isSuccess ? 'Yield Strategy Deployed Successfully!' : 'Deploy to Yield Strategy'}
+        {isSuccess ? 'Deployed to FTSO v2 Delegation' : 'Deploy to Yield Strategy'}
       </h3>
       <p className="text-xs text-[#4A4A4A]">
         {isSuccess
-          ? 'Your capital is now active and auto-compounding in the vault strategy. Redirecting to Dashboard...'
+          ? 'Your capital is live in the strategy and compounding automatically.'
           : 'Your FXRP is in the vault. Deploy it now to start earning yield automatically.'}
       </p>
     </div>
@@ -1523,17 +1651,23 @@ const StepDeployToStrategy: React.FC<{
     {/* Success Banner */}
     {isSuccess && (
       <motion.div
-        initial={{opacity: 0, scale: 0.95}}
-        animate={{opacity: 1, scale: 1}}
-        className="p-4 rounded-2xl bg-emerald-50 border border-emerald-300 text-center mb-6 shadow-sm"
+        initial={{opacity: 0, y: 8}}
+        animate={{opacity: 1, y: 0}}
+        className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-300/60 mb-6"
       >
-        <div className="flex items-center justify-center gap-2 text-emerald-800 font-bold text-sm mb-1">
-          <ShieldCheck className="w-5 h-5 text-emerald-600" />
-          <span>Yield Strategy Active & Auto-Compounding</span>
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full bg-emerald-100 border border-emerald-300 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-[#1E1E1E]" style={{fontFamily: 'Manrope, sans-serif'}}>
+              Strategy active — auto-compounding
+            </p>
+            <p className="text-[10px] font-mono text-[#4A4A4A] mt-0.5">
+              Redirecting to Dashboard…
+            </p>
+          </div>
         </div>
-        <p className="text-xs text-emerald-700 font-mono">
-          🚀 Routing to your Dashboard in 2 seconds...
-        </p>
       </motion.div>
     )}
 
@@ -1583,10 +1717,10 @@ const StepDeployToStrategy: React.FC<{
     {isSuccess ? (
       <button
         onClick={onGoToDashboard}
-        className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold uppercase tracking-[0.15em] flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all"
+        className="w-full py-3.5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] text-[11px] font-bold uppercase tracking-[0.2em] hover:bg-[#000000] transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
       >
-        <Check className="w-4 h-4" />
-        <span>View Dashboard Now</span>
+        <Check className="w-4 h-4 text-emerald-400" />
+        <span>Back to Dashboard</span>
       </button>
     ) : (
       <div className="grid grid-cols-2 gap-3">
