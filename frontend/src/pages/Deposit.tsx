@@ -1361,7 +1361,7 @@ const StepDeployToStrategy: React.FC<{
       )}
       <div className="flex items-center justify-between text-xs">
         <span className="text-[#4A4A4A]">Target Strategy</span>
-        <span className="font-mono font-bold text-[#E1BAC2]">SparkDEX V2 LP</span>
+        <span className="font-mono font-bold text-[#E1BAC2]">FTSO V2 Delegation Rewards</span>
       </div>
       <div className="flex items-center justify-between text-xs">
         <span className="text-[#4A4A4A]">Projected APY</span>

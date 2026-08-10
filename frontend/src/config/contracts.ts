@@ -39,7 +39,7 @@ export const CONTRACTS = {
   // === Strategy Adapters ===
   strategies: {
     // FXRP Vault Strategies
-    ftsoV2Delegation: import.meta.env.VITE_FTSO_ADAPTER_ADDRESS || '0xa0811A54F72Fd3e7b0F30d75227741feFE2755fB',
+    ftsoV2Delegation: import.meta.env.VITE_FTSO_ADAPTER_ADDRESS || '0xc529Eb4a03EC14E58598D03058DBb43B75059851',
     sparkDexLp: import.meta.env.VITE_SPARKDEX_ADAPTER_ADDRESS || '0xA88327A42267C0dE171CBECA1b016dEF2e990612',
     smartAccountDirectMint: import.meta.env.VITE_SMART_ACCOUNT_ADAPTER_ADDRESS || '0xE0395E7B9Ac8B39463b85a8B20D93c2429F7D4Aa',
     enosysFxrp: import.meta.env.VITE_ENOSYS_FXRP_ADAPTER_ADDRESS || '0x5A839334A11983b958a7C70a8822783db6Be4bf6',

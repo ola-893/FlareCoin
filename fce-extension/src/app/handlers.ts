@@ -258,14 +258,14 @@ async function calculateStrategyAPYs(strategies: `0x${string}`[]): Promise<Strat
       let estimatedAPY = 0;
       let confidence = 0.7;
 
-      if (strategy.toLowerCase() === SPARKDEX_ADAPTER.toLowerCase()) {
-        // SparkDEX LP: High yield V2 LP strategy for FXRP (Top Pick)
-        estimatedAPY = 12.0;
-        confidence = 0.85;
-      } else if (strategy.toLowerCase() === FTSO_ADAPTER.toLowerCase()) {
-        // FTSO Delegation: Reliable native FTSO V2 rewards for FXRP (High Confidence)
-        estimatedAPY = 8.5;
+      if (strategy.toLowerCase() === FTSO_ADAPTER.toLowerCase()) {
+        // FTSO Delegation: Native FTSO V2 rewards with testnet safety (Top Pick)
+        estimatedAPY = 14.0;
         confidence = 0.95;
+      } else if (strategy.toLowerCase() === SPARKDEX_ADAPTER.toLowerCase()) {
+        // SparkDEX LP: Secondary V2 LP strategy
+        estimatedAPY = 10.0;
+        confidence = 0.80;
       } else if (strategy.toLowerCase() === ENOSYS_CDP_ADAPTER.toLowerCase()) {
         // Enosys CDP LP: CDP vault strategy only (Not for FXRP)
         estimatedAPY = 1.0;

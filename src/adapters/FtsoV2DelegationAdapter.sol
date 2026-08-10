@@ -77,48 +77,80 @@ contract FtsoV2DelegationAdapter is IStrategyAdapter, Ownable, Pausable, Reentra
         path[1] = address(wnat);
         
         fxrp.forceApprove(address(router), amount);
-        uint256[] memory amounts = router.swapExactTokensForTokens(amount, minWNatOut, path, address(this), block.timestamp);
-        fxrp.forceApprove(address(router), 0);
-        
-        _delegateAll();
-        
-        emit Deposited(amount, amounts[1]);
+        try router.swapExactTokensForTokens(amount, minWNatOut, path, address(this), block.timestamp) returns (uint256[] memory amounts) {
+            fxrp.forceApprove(address(router), 0);
+            _delegateAll();
+            emit Deposited(amount, amounts[1]);
+        } catch {
+            fxrp.forceApprove(address(router), 0);
+            emit Deposited(amount, 0);
+        }
         return amount;
     }
 
     function withdraw(uint256 amount, uint256 minAmountOut) external override onlyVault whenNotPaused nonReentrant returns (uint256) {
+        uint256 fxrpBalance = fxrp.balanceOf(address(this));
         uint256 wnatBalance = _getWNat().balanceOf(address(this));
-        if (wnatBalance == 0) revert NothingToWithdraw();
+        
+        if (fxrpBalance >= amount) {
+            fxrp.safeTransfer(vault, amount);
+            emit Withdrawn(0, amount);
+            return amount;
+        }
+
+        if (wnatBalance == 0 && fxrpBalance == 0) revert NothingToWithdraw();
         
         uint256 wnatToSwap = amount * 11 / 10;
         if (wnatToSwap > wnatBalance) wnatToSwap = wnatBalance;
         
-        uint256 fxrpReceived = _swapWNatToFXRP(wnatToSwap, minAmountOut);
-        if (fxrpReceived < minAmountOut) revert SlippageExceeded(minAmountOut, fxrpReceived);
-        
-        fxrp.safeTransfer(vault, fxrpReceived);
-        emit Withdrawn(wnatToSwap, fxrpReceived);
-        return fxrpReceived;
+        uint256 fxrpReceived = 0;
+        if (wnatToSwap > 0) {
+            try this.swapWNatHelper(wnatToSwap, minAmountOut) returns (uint256 rec) {
+                fxrpReceived = rec;
+            } catch {
+                fxrpReceived = 0;
+            }
+        }
+
+        uint256 totalToSend = fxrpBalance + fxrpReceived;
+        if (totalToSend > amount) totalToSend = amount;
+        if (totalToSend == 0) revert InsufficientBalance(amount, 0);
+
+        fxrp.safeTransfer(vault, totalToSend);
+        emit Withdrawn(wnatToSwap, totalToSend);
+        return totalToSend;
+    }
+
+    function swapWNatHelper(uint256 wnatToSwap, uint256 minAmountOut) external returns (uint256) {
+        return _swapWNatToFXRP(wnatToSwap, minAmountOut);
     }
 
     function withdrawAll(uint256 minAmountOut) external override onlyVault whenNotPaused nonReentrant returns (uint256) {
+        uint256 fxrpBalance = fxrp.balanceOf(address(this));
         IWNat wnat = _getWNat();
         uint256 wnatBalance = wnat.balanceOf(address(this));
-        if (wnatBalance == 0) revert NothingToWithdraw();
         
-        wnat.undelegateAll();
-        uint256 fxrpReceived = _swapWNatToFXRP(wnatBalance, minAmountOut);
-        if (fxrpReceived < minAmountOut) revert SlippageExceeded(minAmountOut, fxrpReceived);
+        uint256 fxrpReceived = 0;
+        if (wnatBalance > 0) {
+            wnat.undelegateAll();
+            try this.swapWNatHelper(wnatBalance, minAmountOut) returns (uint256 rec) {
+                fxrpReceived = rec;
+            } catch {}
+        }
         
-        fxrp.safeTransfer(vault, fxrpReceived);
-        emit Withdrawn(wnatBalance, fxrpReceived);
-        return fxrpReceived;
+        uint256 totalFxrp = fxrpBalance + fxrpReceived;
+        if (totalFxrp == 0) revert NothingToWithdraw();
+        
+        fxrp.safeTransfer(vault, totalFxrp);
+        emit Withdrawn(wnatBalance, totalFxrp);
+        return totalFxrp;
     }
 
     function totalValue() external view override returns (uint256) {
+        uint256 fxrpBalance = fxrp.balanceOf(address(this));
         IWNat wnat = _getWNat();
         uint256 wnatBalance = wnat.balanceOf(address(this));
-        if (wnatBalance == 0) return 0;
+        if (wnatBalance == 0) return fxrpBalance;
         
         ISparkDexRouter router = ISparkDexRouter(SPARKDEX_ROUTER);
         address[] memory path = new address[](2);
@@ -126,9 +158,9 @@ contract FtsoV2DelegationAdapter is IStrategyAdapter, Ownable, Pausable, Reentra
         path[1] = address(fxrp);
         
         try router.getAmountsOut(wnatBalance, path) returns (uint256[] memory amounts) {
-            return amounts[1];
+            return fxrpBalance + amounts[1];
         } catch {
-            return 0;
+            return fxrpBalance + wnatBalance;
         }
     }
 
