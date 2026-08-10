@@ -144,8 +144,10 @@ export async function handleCalculateOptimal(msg: string): Promise<HandlerResult
   // 5. Build rebalance payload
   const now = BigInt(Math.floor(Date.now() / 1000));
   const deadline = now + BigInt(3600); // 1 hour deadline
-  const twapEnd = now;
-  const twapStart = now - BigInt(MIN_TWAP_WINDOW);
+  // Buffer twapEnd by 60s in the past to prevent twapEnd > block.timestamp due to client clock drift
+  const twapEnd = now - BigInt(60);
+  // Buffer twapStart to guarantee window >= MIN_TWAP_WINDOW (24 hours)
+  const twapStart = twapEnd - BigInt(MIN_TWAP_WINDOW) - BigInt(300);
 
   // Calculate minimum output with slippage
   const deployAmount = (request.idleAssets * BigInt(10000 - request.liquidityBufferBps)) / BigInt(10000);
