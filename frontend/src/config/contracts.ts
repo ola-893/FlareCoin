@@ -9,7 +9,21 @@
  * Chain ID: 114
  */
 
-export const COSTON2_CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID) || 114;
+const getEnv = (key: string, fallback: string): string => {
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env[key]) {
+      return process.env[key]!;
+    }
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+      return import.meta.env[key];
+    }
+  } catch {
+    // Fallback for isolated contexts
+  }
+  return fallback;
+};
+
+export const COSTON2_CHAIN_ID = Number(getEnv('VITE_CHAIN_ID', '114')) || 114;
 
 /**
  * Core FlareYield Protocol Contracts - Multi-Vault Architecture
@@ -20,7 +34,7 @@ export const COSTON2_CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID) || 114;
  */
 export const FCE_CONFIG = {
   // FCE extension HTTP endpoint (for rebalance signing)
-  endpoint: import.meta.env.VITE_FCE_ENDPOINT || 'http://localhost:8080',
+  endpoint: getEnv('VITE_FCE_ENDPOINT', 'http://localhost:8080'),
   // Operation types matching fce-extension/src/app/config.ts
   opType: 'VAULT_REBALANCE',
   opCommand: 'CALCULATE_OPTIMAL',
@@ -30,53 +44,53 @@ export const CONTRACTS = {
   // === FXRP Vault (Growth-Oriented) ===
   vaults: {
     // ParentVault_FXRP - ERC-4626 vault (proxy) for FXRP
-    fxrpVault: import.meta.env.VITE_FXRP_VAULT_ADDRESS || '0x01f64160E4928Eba5607aE294F9B66090Dc323B3',
+    fxrpVault: getEnv('VITE_FXRP_VAULT_ADDRESS', '0x01f64160E4928Eba5607aE294F9B66090Dc323B3'),
     
     // ParentVault_CDP - ERC-4626 vault (proxy) for CDP stablecoin
-    cdpVault: import.meta.env.VITE_CDP_VAULT_ADDRESS || '0x71cF7B0f792400a2533e917bcfB3892b34b569e8',
+    cdpVault: getEnv('VITE_CDP_VAULT_ADDRESS', '0x71cF7B0f792400a2533e917bcfB3892b34b569e8'),
   },
   
   // === Strategy Adapters ===
   strategies: {
     // FXRP Vault Strategies
-    ftsoV2Delegation: import.meta.env.VITE_FTSO_ADAPTER_ADDRESS || '0xc529Eb4a03EC14E58598D03058DBb43B75059851',
-    sparkDexLp: import.meta.env.VITE_SPARKDEX_ADAPTER_ADDRESS || '0xA88327A42267C0dE171CBECA1b016dEF2e990612',
-    smartAccountDirectMint: import.meta.env.VITE_SMART_ACCOUNT_ADAPTER_ADDRESS || '0xE0395E7B9Ac8B39463b85a8B20D93c2429F7D4Aa',
-    enosysFxrp: import.meta.env.VITE_ENOSYS_FXRP_ADAPTER_ADDRESS || '0x5A839334A11983b958a7C70a8822783db6Be4bf6',
+    ftsoV2Delegation: getEnv('VITE_FTSO_ADAPTER_ADDRESS', '0xc529Eb4a03EC14E58598D03058DBb43B75059851'),
+    sparkDexLp: getEnv('VITE_SPARKDEX_ADAPTER_ADDRESS', '0xA88327A42267C0dE171CBECA1b016dEF2e990612'),
+    smartAccountDirectMint: getEnv('VITE_SMART_ACCOUNT_ADAPTER_ADDRESS', '0xE0395E7B9Ac8B39463b85a8B20D93c2429F7D4Aa'),
+    enosysFxrp: getEnv('VITE_ENOSYS_FXRP_ADAPTER_ADDRESS', '0x5A839334A11983b958a7C70a8822783db6Be4bf6'),
     
     // CDP Vault Strategies
-    enosysCdpLp: import.meta.env.VITE_ENOSYS_CDP_ADAPTER_ADDRESS || '0x276BBc877C3d50e50848E7ca8c68241D959F4800',
+    enosysCdpLp: getEnv('VITE_ENOSYS_CDP_ADAPTER_ADDRESS', '0x276BBc877C3d50e50848E7ca8c68241D959F4800'),
   },
   
   // === Legacy / Backward Compatibility ===
   // @deprecated Use vaults.fxrpVault instead
-  parentVault: import.meta.env.VITE_PARENT_VAULT_ADDRESS || '0x01f64160E4928Eba5607aE294F9B66090Dc323B3',
+  parentVault: getEnv('VITE_PARENT_VAULT_ADDRESS', '0x01f64160E4928Eba5607aE294F9B66090Dc323B3'),
   
   // FAssetAdapter - Direct minting integration
-  fAssetAdapter: import.meta.env.VITE_FASSET_ADAPTER_ADDRESS || '0x02D4F85301A2d1b3Bcc40BfD7937e6Fb2F5224a7',
+  fAssetAdapter: getEnv('VITE_FASSET_ADAPTER_ADDRESS', '0x02D4F85301A2d1b3Bcc40BfD7937e6Fb2F5224a7'),
   
   // FCE (Flare Compute Extension) - InstructionSender
-  instructionSender: import.meta.env.VITE_INSTRUCTION_SENDER_ADDRESS || '0xCaCFdd034D05419e2F5572E4F4170bd26caD05B7',
+  instructionSender: getEnv('VITE_INSTRUCTION_SENDER_ADDRESS', '0xCaCFdd034D05419e2F5572E4F4170bd26caD05B7'),
   
   // === Underlying Assets ===
   tokens: {
     // FXRP Token (Flare-wrapped XRP)
-    fxrp: import.meta.env.VITE_FXRP_ADDRESS || '0x0b6A3645c240605887a5532109323A3E12273dc7',
+    fxrp: getEnv('VITE_FXRP_ADDRESS', '0x0b6A3645c240605887a5532109323A3E12273dc7'),
     
     // CDP Token (Enosys CDP Dollar - XRP-backed stablecoin)
-    cdp: import.meta.env.VITE_CDP_ADDRESS || '0x41D503D78D319D685fb9311363732009f7224059',
+    cdp: getEnv('VITE_CDP_ADDRESS', '0x41D503D78D319D685fb9311363732009f7224059'),
     
     // WC2FLR / WNat (Wrapped Flare)
-    wc2flr: import.meta.env.VITE_WC2FLR_ADDRESS || '0xC67DCE33D7A8efA5FfEB961899C73fe01bCe9273',
+    wc2flr: getEnv('VITE_WC2FLR_ADDRESS', '0xC67DCE33D7A8efA5FfEB961899C73fe01bCe9273'),
   },
   
   // === Legacy Token References ===
   // @deprecated Use tokens.fxrp instead
-  fxrp: import.meta.env.VITE_FXRP_ADDRESS || '0x0b6A3645c240605887a5532109323A3E12273dc7',
+  fxrp: getEnv('VITE_FXRP_ADDRESS', '0x0b6A3645c240605887a5532109323A3E12273dc7'),
   
   // === Flare FAsset Infrastructure ===
-  assetManagerFXRP: import.meta.env.VITE_ASSET_MANAGER_FXRP_ADDRESS || '0xc1Ca88b937d0b528842F95d5731ffB586f4fbDFA',
-  mintingTagManager: import.meta.env.VITE_MINTING_TAG_MANAGER_ADDRESS || '0x094511737909b626391106bBc21B25feb2D67B96',
+  assetManagerFXRP: getEnv('VITE_ASSET_MANAGER_FXRP_ADDRESS', '0xc1Ca88b937d0b528842F95d5731ffB586f4fbDFA'),
+  mintingTagManager: getEnv('VITE_MINTING_TAG_MANAGER_ADDRESS', '0x094511737909b626391106bBc21B25feb2D67B96'),
 } as const;
 
 /**
@@ -202,7 +216,7 @@ export const STRATEGY_ADAPTER_ABI = [
 /**
  * Explorer URLs
  */
-export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_URL || 'https://coston2-explorer.flare.network';
+export const EXPLORER_BASE_URL = getEnv('VITE_EXPLORER_URL', 'https://coston2-explorer.flare.network');
 
 export const getExplorerUrl = (address: string, type: 'address' | 'tx' = 'address') => {
   return `${EXPLORER_BASE_URL}/${type}/${address}`;
