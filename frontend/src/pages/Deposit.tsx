@@ -372,11 +372,11 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
       setAutoDeployStatus('success');
       localStorage.removeItem('flux-auto-deploy');
       const timer = setTimeout(() => {
-        navigate('/dashboard');
-      }, 2000);
+        onBack();
+      }, 1500);
       return () => clearTimeout(timer);
     }
-  }, [rebalanceHash, isRebalanceSuccess, deploySuccess, navigate]);
+  }, [rebalanceHash, isRebalanceSuccess, deploySuccess, onBack]);
 
   // ─── Auto-deploy fallback state ──────────────────────────────────────────
   const AUTO_DEPLOY_SECONDS = 300; // 5 minutes default
@@ -911,6 +911,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               xrplAmount={xrplAmount}
               onDeploy={handleDeployToStrategy}
               onSkip={handleSkipDeploy}
+              onGoToDashboard={onBack}
               isDeploying={isRebalancing || isRequestingSignature}
               isConfirming={isRebalanceConfirming}
               isSuccess={isRebalanceSuccess || deploySuccess}
@@ -1492,12 +1493,13 @@ const StepDeployToStrategy: React.FC<{
   xrplAmount: string | null;
   onDeploy: () => void;
   onSkip: () => void;
+  onGoToDashboard: () => void;
   isDeploying: boolean;
   isConfirming: boolean;
   isSuccess?: boolean;
   error?: string | null;
   isRequestingSignature?: boolean;
-}> = ({xrplAmount, onDeploy, onSkip, isDeploying, isConfirming, isSuccess, error, isRequestingSignature}) => (
+}> = ({xrplAmount, onDeploy, onSkip, onGoToDashboard, isDeploying, isConfirming, isSuccess, error, isRequestingSignature}) => (
   <motion.div
     initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -20}}
     className="glass-panel p-6 sm:p-8 rounded-3xl border border-[#1E1E1E]/15 shadow-soft-editorial bg-white/60"
@@ -1579,10 +1581,13 @@ const StepDeployToStrategy: React.FC<{
     )}
 
     {isSuccess ? (
-      <div className="w-full py-3.5 rounded-full bg-emerald-600 text-white text-xs font-bold uppercase tracking-[0.15em] flex items-center justify-center gap-2 shadow-md">
+      <button
+        onClick={onGoToDashboard}
+        className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold uppercase tracking-[0.15em] flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all"
+      >
         <Check className="w-4 h-4" />
-        <span>Redirecting to Dashboard...</span>
-      </div>
+        <span>View Dashboard Now</span>
+      </button>
     ) : (
       <div className="grid grid-cols-2 gap-3">
         <button
