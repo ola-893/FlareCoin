@@ -1441,11 +1441,37 @@ const StepFdcDirectMint: React.FC<{
         )}
         <div className="flex items-start gap-3 p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
           <span className="w-5 h-5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-[#1E1E1E]">Send XRP to the FAssets Core Vault with destination tag <span className="font-mono font-bold">{tag}</span>.</p>
-            <div className="mt-2 p-3 rounded-lg bg-[#1E1E1E] text-[#F5F5F3] flex items-center gap-2">
-              <code className="text-[10px] font-mono break-all flex-1">{isVaultLoading ? 'Loading Core Vault…' : coreVaultAddress ?? 'Unable to load Core Vault'}</code>
-              {coreVaultAddress && <button onClick={onCopyVaultAddress} className="p-1.5 rounded bg-white/10 hover:bg-white/20">{vaultCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}</button>}
+          <div className="min-w-0 flex-1 space-y-2">
+            <p className="text-xs text-[#1E1E1E]">Send XRP from your XRPL wallet using these exact payment details:</p>
+            
+            {/* Core Vault Address Box */}
+            <div className="p-3 rounded-lg bg-[#1E1E1E] text-[#F5F5F3]">
+              <div className="flex items-center justify-between text-[9px] font-mono text-[#E1BAC2] uppercase tracking-wider mb-1">
+                <span>FAssets Core Vault Address (XRPL)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="text-[10px] font-mono break-all flex-1">{isVaultLoading ? 'Loading Core Vault…' : coreVaultAddress ?? 'Unable to load Core Vault'}</code>
+                {coreVaultAddress && (
+                  <button onClick={onCopyVaultAddress} title="Copy Core Vault Address" className="p-1.5 rounded bg-white/10 hover:bg-white/20 transition-colors cursor-pointer shrink-0">
+                    {vaultCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Destination Tag Box */}
+            <div className="p-3 rounded-lg bg-[#1E1E1E] text-[#F5F5F3]">
+              <div className="flex items-center justify-between text-[9px] font-mono text-[#E1BAC2] uppercase tracking-wider mb-1">
+                <span>Destination Tag</span>
+                <span className="text-[9px] font-bold text-amber-300 font-mono">REQUIRED</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-base font-mono font-extrabold tracking-wider text-white">{tag}</span>
+                <button onClick={onCopyTag} title="Copy Destination Tag" className="p-1.5 px-2.5 rounded bg-white/10 hover:bg-white/20 transition-colors cursor-pointer flex items-center gap-1.5 text-[10px] shrink-0">
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-[#E1BAC2]" />}
+                  <span className="text-[10px] font-mono font-bold text-[#F5F5F3]">{copied ? 'Copied!' : 'Copy Tag'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
