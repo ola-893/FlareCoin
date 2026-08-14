@@ -16,6 +16,7 @@ Flux combines **Flare Data Connector (FDC) non-custodial FAssets direct minting*
 
 | Resource | Link |
 |----------|------|
+| **Demo Video** | [Watch on YouTube (Demo Walkthrough)](https://www.youtube.com/watch?v=9k0vSpx6BMk) |
 | **Live dApp (Primary)** | [https://yield-flux.netlify.app](https://yield-flux.netlify.app) |
 | **Mirror 1** | [https://flux-protocol-coston2.netlify.app](https://flux-protocol-coston2.netlify.app) |
 | **Mirror 2** | [https://flareyield-manager-coston2.netlify.app](https://flareyield-manager-coston2.netlify.app) |
