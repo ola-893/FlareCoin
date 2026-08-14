@@ -166,6 +166,8 @@ contract ParentVaultPhase1Test is Test {
         // Sign with TEE private key
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(teeNodePrivateKey, ethHash);
         bytes memory signature = abi.encodePacked(r, s, v);
+        // FCC action-result signatures encode recovery ID as 0/1 rather than 27/28.
+        signature[64] = bytes1(uint8(signature[64]) - 27);
 
         // Execute rebalance with ActionResult format
         vault.executeRebalance(
@@ -338,11 +340,14 @@ contract ParentVaultPhase1Test is Test {
         vault.deposit(100 ether, user);
         vm.stopPrank();
 
-        // Request rebalance manually
-        vault.requestRebalance();
+        // Request rebalance manually and ensure the FCC fee is forwarded.
+        uint256 instructionFee = 1_000_000;
+        vm.deal(address(this), instructionFee);
+        vault.requestRebalance{value: instructionFee}();
 
         // Verify lastInstructionId is bytes32 (not uint256)
         bytes32 lastId = vault.lastInstructionId();
         assertTrue(lastId != bytes32(0), "Instruction ID should be non-zero");
+        assertEq(instructionSender.lastValue(), instructionFee, "FCC fee should be forwarded to InstructionSender");
     }
 }

@@ -23,6 +23,19 @@ const getEnv = (key: string, fallback: string): string => {
   return fallback;
 };
 
+// Addresses arrive from Vite as strings. Keep the type narrow at the boundary
+// so contract calls cannot silently accept arbitrary non-address strings.
+const getAddressEnv = (key: string, fallback: `0x${string}`): `0x${string}` =>
+  getEnv(key, fallback) as `0x${string}`;
+
+const getBigIntEnv = (key: string, fallback: bigint): bigint => {
+  try {
+    return BigInt(getEnv(key, fallback.toString()));
+  } catch {
+    return fallback;
+  }
+};
+
 export const COSTON2_CHAIN_ID = Number(getEnv('VITE_CHAIN_ID', '114')) || 114;
 
 /**
@@ -33,8 +46,11 @@ export const COSTON2_CHAIN_ID = Number(getEnv('VITE_CHAIN_ID', '114')) || 114;
  * TEE extension for autonomous vault rebalancing
  */
 export const FCE_CONFIG = {
-  // FCE extension HTTP endpoint (for rebalance signing)
-  endpoint: getEnv('VITE_FCE_ENDPOINT', 'http://localhost:8080'),
+  // Public FCC proxy endpoint. It is intentionally required for a published build:
+  // browsers only read signed action results; they never access a local TEE signer.
+  endpoint: getEnv('VITE_FCE_ENDPOINT', ''),
+  // Coston2 FCC registry instruction fee. This is native C2FLR wei, not FXRP.
+  instructionFeeWei: getBigIntEnv('VITE_FCE_INSTRUCTION_FEE_WEI', 1_000_000n),
   // Operation types matching fce-extension/src/app/config.ts
   opType: 'VAULT_REBALANCE',
   opCommand: 'CALCULATE_OPTIMAL',
@@ -44,53 +60,55 @@ export const CONTRACTS = {
   // === FXRP Vault (Growth-Oriented) ===
   vaults: {
     // ParentVault_FXRP - ERC-4626 vault (proxy) for FXRP
-    fxrpVault: getEnv('VITE_FXRP_VAULT_ADDRESS', '0x01f64160E4928Eba5607aE294F9B66090Dc323B3'),
+    fxrpVault: getAddressEnv('VITE_FXRP_VAULT_ADDRESS', '0x01f64160E4928Eba5607aE294F9B66090Dc323B3'),
     
     // ParentVault_CDP - ERC-4626 vault (proxy) for CDP stablecoin
-    cdpVault: getEnv('VITE_CDP_VAULT_ADDRESS', '0x71cF7B0f792400a2533e917bcfB3892b34b569e8'),
+    cdpVault: getAddressEnv('VITE_CDP_VAULT_ADDRESS', '0x71cF7B0f792400a2533e917bcfB3892b34b569e8'),
   },
   
   // === Strategy Adapters ===
   strategies: {
     // FXRP Vault Strategies
-    ftsoV2Delegation: getEnv('VITE_FTSO_ADAPTER_ADDRESS', '0xc529Eb4a03EC14E58598D03058DBb43B75059851'),
-    sparkDexLp: getEnv('VITE_SPARKDEX_ADAPTER_ADDRESS', '0xA88327A42267C0dE171CBECA1b016dEF2e990612'),
-    smartAccountDirectMint: getEnv('VITE_SMART_ACCOUNT_ADAPTER_ADDRESS', '0xE0395E7B9Ac8B39463b85a8B20D93c2429F7D4Aa'),
-    enosysFxrp: getEnv('VITE_ENOSYS_FXRP_ADAPTER_ADDRESS', '0x5A839334A11983b958a7C70a8822783db6Be4bf6'),
+    ftsoV2Delegation: getAddressEnv('VITE_FTSO_ADAPTER_ADDRESS', '0xc529Eb4a03EC14E58598D03058DBb43B75059851'),
+    sparkDexLp: getAddressEnv('VITE_SPARKDEX_ADAPTER_ADDRESS', '0xA88327A42267C0dE171CBECA1b016dEF2e990612'),
+    smartAccountDirectMint: getAddressEnv('VITE_SMART_ACCOUNT_ADAPTER_ADDRESS', '0xE0395E7B9Ac8B39463b85a8B20D93c2429F7D4Aa'),
+    enosysFxrp: getAddressEnv('VITE_ENOSYS_FXRP_ADAPTER_ADDRESS', '0x5A839334A11983b958a7C70a8822783db6Be4bf6'),
     
     // CDP Vault Strategies
-    enosysCdpLp: getEnv('VITE_ENOSYS_CDP_ADAPTER_ADDRESS', '0x276BBc877C3d50e50848E7ca8c68241D959F4800'),
+    enosysCdpLp: getAddressEnv('VITE_ENOSYS_CDP_ADAPTER_ADDRESS', '0x276BBc877C3d50e50848E7ca8c68241D959F4800'),
   },
   
   // === Legacy / Backward Compatibility ===
   // @deprecated Use vaults.fxrpVault instead
-  parentVault: getEnv('VITE_PARENT_VAULT_ADDRESS', '0x01f64160E4928Eba5607aE294F9B66090Dc323B3'),
+  parentVault: getAddressEnv('VITE_PARENT_VAULT_ADDRESS', '0x01f64160E4928Eba5607aE294F9B66090Dc323B3'),
   
-  // FAssetAdapter - Direct minting integration
-  fAssetAdapter: getEnv('VITE_FASSET_ADAPTER_ADDRESS', '0x02D4F85301A2d1b3Bcc40BfD7937e6Fb2F5224a7'),
+  // FDC-verified direct-mint adapter.
+  fAssetAdapter: getAddressEnv('VITE_FASSET_ADAPTER_ADDRESS', '0xDd305DEe5a175575C74c62FC74065efb57e06ace'),
+  // FDC Hub receives the user-paid XRPPayment attestation request.
+  fdcHub: getAddressEnv('VITE_FDC_HUB_ADDRESS', '0x48aC463d7975828989331F4De43341627b9c5f1D'),
   
   // FCE (Flare Compute Extension) - InstructionSender
-  instructionSender: getEnv('VITE_INSTRUCTION_SENDER_ADDRESS', '0xCaCFdd034D05419e2F5572E4F4170bd26caD05B7'),
+  instructionSender: getAddressEnv('VITE_INSTRUCTION_SENDER_ADDRESS', '0x94A838fb58B226b0EB01Fa8DdE3758806AcE1Ba7'),
   
   // === Underlying Assets ===
   tokens: {
     // FXRP Token (Flare-wrapped XRP)
-    fxrp: getEnv('VITE_FXRP_ADDRESS', '0x0b6A3645c240605887a5532109323A3E12273dc7'),
+    fxrp: getAddressEnv('VITE_FXRP_ADDRESS', '0x0b6A3645c240605887a5532109323A3E12273dc7'),
     
     // CDP Token (Enosys CDP Dollar - XRP-backed stablecoin)
-    cdp: getEnv('VITE_CDP_ADDRESS', '0x41D503D78D319D685fb9311363732009f7224059'),
+    cdp: getAddressEnv('VITE_CDP_ADDRESS', '0x41D503D78D319D685fb9311363732009f7224059'),
     
     // WC2FLR / WNat (Wrapped Flare)
-    wc2flr: getEnv('VITE_WC2FLR_ADDRESS', '0xC67DCE33D7A8efA5FfEB961899C73fe01bCe9273'),
+    wc2flr: getAddressEnv('VITE_WC2FLR_ADDRESS', '0xC67DCE33D7A8efA5FfEB961899C73fe01bCe9273'),
   },
   
   // === Legacy Token References ===
   // @deprecated Use tokens.fxrp instead
-  fxrp: getEnv('VITE_FXRP_ADDRESS', '0x0b6A3645c240605887a5532109323A3E12273dc7'),
+  fxrp: getAddressEnv('VITE_FXRP_ADDRESS', '0x0b6A3645c240605887a5532109323A3E12273dc7'),
   
   // === Flare FAsset Infrastructure ===
-  assetManagerFXRP: getEnv('VITE_ASSET_MANAGER_FXRP_ADDRESS', '0xc1Ca88b937d0b528842F95d5731ffB586f4fbDFA'),
-  mintingTagManager: getEnv('VITE_MINTING_TAG_MANAGER_ADDRESS', '0x094511737909b626391106bBc21B25feb2D67B96'),
+  assetManagerFXRP: getAddressEnv('VITE_ASSET_MANAGER_FXRP_ADDRESS', '0xc1Ca88b937d0b528842F95d5731ffB586f4fbDFA'),
+  mintingTagManager: getAddressEnv('VITE_MINTING_TAG_MANAGER_ADDRESS', '0x094511737909b626391106bBc21B25feb2D67B96'),
 } as const;
 
 /**
@@ -141,7 +159,7 @@ export const PARENT_VAULT_ABI = [
   {type:'function',name:'instructionSender',stateMutability:'view',inputs:[],outputs:[{name:'',type:'address'}]},
   {type:'function',name:'rebalanceThreshold',stateMutability:'view',inputs:[],outputs:[{name:'',type:'uint256'}]},
   {type:'function',name:'lastInstructionId',stateMutability:'view',inputs:[],outputs:[{name:'',type:'bytes32'}]},
-  {type:'function',name:'requestRebalance',stateMutability:'nonpayable',inputs:[],outputs:[]},
+  {type:'function',name:'requestRebalance',stateMutability:'payable',inputs:[],outputs:[]},
   {type:'function',name:'executeRebalance',stateMutability:'nonpayable',inputs:[{name:'resultData',type:'bytes'},{name:'actionId',type:'bytes32'},{name:'submissionTag',type:'string'},{name:'status',type:'uint8'},{name:'signature',type:'bytes'}],outputs:[]},
   // Events
   {type:'event',name:'Deposit',inputs:[{name:'sender',type:'address',indexed:true},{name:'owner',type:'address',indexed:true},{name:'assets',type:'uint256',indexed:false},{name:'shares',type:'uint256',indexed:false}]},
@@ -170,6 +188,40 @@ export const FASSET_ADAPTER_ABI = [
   {type:'event',name:'DirectMintSettled',inputs:[{name:'depositId',type:'bytes32',indexed:true},{name:'receiver',type:'address',indexed:true},{name:'assets',type:'uint256',indexed:false},{name:'shares',type:'uint256',indexed:false}]},
 ] as const;
 
+// Secure replacement for the legacy watcher-driven FAssetAdapter. The final
+// call accepts an FDC Merkle proof, then delegates verification and minting to
+// Flare's live AssetManager inside the same transaction.
+export const FDC_DIRECT_MINT_ADAPTER_ABI = [
+  {type:'function',name:'vault',stateMutability:'view',inputs:[],outputs:[{name:'',type:'address'}]},
+  {type:'function',name:'fAsset',stateMutability:'view',inputs:[],outputs:[{name:'',type:'address'}]},
+  {type:'function',name:'assetManager',stateMutability:'view',inputs:[],outputs:[{name:'',type:'address'}]},
+  {type:'function',name:'mintingTagManager',stateMutability:'view',inputs:[],outputs:[{name:'',type:'address'}]},
+  {type:'function',name:'registerMintingTag',stateMutability:'payable',inputs:[],outputs:[{name:'tag',type:'uint256'}]},
+  {type:'function',name:'tagUser',stateMutability:'view',inputs:[{name:'tag',type:'uint256'}],outputs:[{name:'',type:'address'}]},
+  {type:'function',name:'getTagsForUser',stateMutability:'view',inputs:[{name:'user',type:'address'}],outputs:[{name:'',type:'uint256[]'}]},
+  {type:'function',name:'processedPayments',stateMutability:'view',inputs:[{name:'transactionId',type:'bytes32'}],outputs:[{name:'',type:'bool'}]},
+  {
+    type:'function', name:'executeFdcDirectMint', stateMutability:'nonpayable',
+    inputs:[{name:'payment',type:'tuple',components:[
+      {name:'merkleProof',type:'bytes32[]'},
+      {name:'data',type:'tuple',components:[
+        {name:'attestationType',type:'bytes32'}, {name:'sourceId',type:'bytes32'},
+        {name:'votingRound',type:'uint64'}, {name:'lowestUsedTimestamp',type:'uint64'},
+        {name:'requestBody',type:'tuple',components:[{name:'transactionId',type:'bytes32'},{name:'proofOwner',type:'address'}]},
+        {name:'responseBody',type:'tuple',components:[
+          {name:'blockNumber',type:'uint64'}, {name:'blockTimestamp',type:'uint64'}, {name:'sourceAddress',type:'string'},
+          {name:'sourceAddressHash',type:'bytes32'}, {name:'receivingAddressHash',type:'bytes32'}, {name:'intendedReceivingAddressHash',type:'bytes32'},
+          {name:'spentAmount',type:'int256'}, {name:'intendedSpentAmount',type:'int256'}, {name:'receivedAmount',type:'int256'}, {name:'intendedReceivedAmount',type:'int256'},
+          {name:'hasMemoData',type:'bool'}, {name:'firstMemoData',type:'bytes'}, {name:'hasDestinationTag',type:'bool'}, {name:'destinationTag',type:'uint256'}, {name:'status',type:'uint8'}
+        ]}
+      ]}
+    ]}], outputs:[{name:'shares',type:'uint256'}]
+  },
+  {type:'event',name:'MintingTagRegistered',inputs:[{name:'tag',type:'uint256',indexed:true},{name:'user',type:'address',indexed:true}]},
+  {type:'event',name:'FdcDirectMintDeferred',inputs:[{name:'transactionId',type:'bytes32',indexed:true},{name:'tag',type:'uint256',indexed:true}]},
+  {type:'event',name:'FdcDirectMintSettled',inputs:[{name:'transactionId',type:'bytes32',indexed:true},{name:'tag',type:'uint256',indexed:true},{name:'user',type:'address',indexed:true},{name:'relayer',type:'address',indexed:false},{name:'assetsDeposited',type:'uint256',indexed:false},{name:'executorFee',type:'uint256',indexed:false},{name:'shares',type:'uint256',indexed:false}]},
+] as const;
+
 // FXRP (ERC-20) minimal ABI — object format for viem compatibility
 export const FXRP_ABI = [
   {type:'function',name:'name',stateMutability:'view',inputs:[],outputs:[{name:'',type:'string'}]},
@@ -195,6 +247,14 @@ export const ASSET_MANAGER_ABI = [
     inputs: [],
     outputs: [{name: '', type: 'string'}],
   },
+  {name:'getDirectMintingExecutorFeeUBA',type:'function',stateMutability:'view',inputs:[],outputs:[{name:'',type:'uint256'}]},
+  {name:'getDirectMintingFeeBIPS',type:'function',stateMutability:'view',inputs:[],outputs:[{name:'',type:'uint256'}]},
+  {name:'getDirectMintingMinimumFeeUBA',type:'function',stateMutability:'view',inputs:[],outputs:[{name:'',type:'uint256'}]},
+] as const;
+
+export const FDC_HUB_ABI = [
+  {type:'function',name:'requestAttestation',stateMutability:'payable',inputs:[{name:'_data',type:'bytes'}],outputs:[]},
+  {type:'event',name:'AttestationRequest',inputs:[{name:'data',type:'bytes',indexed:false},{name:'fee',type:'uint256',indexed:false}]},
 ] as const;
 
 // MintingTagManager minimal ABI — object format for viem compatibility

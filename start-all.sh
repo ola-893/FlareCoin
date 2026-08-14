@@ -51,7 +51,7 @@ if [[ "$ACTION" == "stop" ]]; then
     if [[ -d "fce-extension-scaffold" ]]; then
         log "Stopping FCE scaffold Docker services..."
         cd fce-extension-scaffold
-        docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml down 2>/dev/null || true
+        ./scripts/stop-services.sh --chain coston2 2>/dev/null || true
         cd ..
     fi
     
@@ -123,42 +123,10 @@ if [[ -d "fce-extension-scaffold" ]]; then
         fi
     fi
 
-    # Heal stale networks that Compose would refuse to reuse.
-    # Compose only adopts an existing network if it carries its own
-    # com.docker.compose.* labels; a leftover network (e.g. created
-    # outside compose, or by an aborted run) has no/foreign labels and
-    # makes `up` fail with: "network ... has incorrect label
-    # com.docker.compose.network set to \"\" (expected: \"default\")".
-    NETWORK_NAME="${COMPOSE_NETWORK:-extension-scaffold-coston2}"
-    # Compose project name = COMPOSE_PROJECT_NAME override, else normalized dirname.
-    COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
-    if docker network inspect "$NETWORK_NAME" &>/dev/null; then
-        # "default" is the network key name in docker-compose.yaml.
-        NET_LABEL="$(docker network inspect "$NETWORK_NAME" --format '{{index .Labels "com.docker.compose.network"}}' 2>/dev/null || true)"
-        NET_PROJECT="$(docker network inspect "$NETWORK_NAME" --format '{{index .Labels "com.docker.compose.project"}}' 2>/dev/null || true)"
-        if [[ "$NET_LABEL" != "default" || "$NET_PROJECT" != "$COMPOSE_PROJECT" ]]; then
-            warn "Stale network '$NETWORK_NAME' is not owned by this compose project — removing it so Compose can recreate it"
-            if ! docker network rm "$NETWORK_NAME" 2>/dev/null; then
-                warn "Could not remove '$NETWORK_NAME' (containers may be attached)."
-                warn "Run: docker network disconnect --force <container> '$NETWORK_NAME' and retry."
-            fi
-        fi
-    fi
-
-    # Start Docker services for Coston2
-    log "Starting Docker Compose services for Coston2..."
-    docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml up -d
-
-    # Wait for services to be ready
-    log "Waiting for services to initialize..."
-    sleep 5
-
-    # Check if Redis is responding
-    if docker compose exec -T redis redis-cli ping &>/dev/null; then
-        log "✅ Redis ready"
-    else
-        warn "⚠️  Redis may not be ready yet"
-    fi
+    # This script resolves LANGUAGE=typescript and builds the matching image.
+    # Calling compose directly defaults to go/Dockerfile and deploys the wrong
+    # extension implementation.
+    ./scripts/start-services.sh --chain coston2
 
     cd ..
 else
@@ -194,7 +162,7 @@ echo ""
 
 # Step 3: Start ngrok tunnel
 log "🌐 Step 3/5: Starting ngrok tunnel (optional)"
-log "  • Exposes FCE extension to external network"
+log "  • Exposes the FCC extension proxy to external network"
 log "  • Reserved domain: trolling-affluent-parcel.ngrok-free.dev"
 
 # Check if ngrok is installed
@@ -207,8 +175,8 @@ else
     if lsof -i :4040 &>/dev/null; then
         log "✅ ngrok already running (dashboard: http://localhost:4040)"
     else
-        log "Starting ngrok tunnel for port 8080..."
-        ngrok http 8080 --log=stdout > ngrok.log 2>&1 &
+        log "Starting ngrok tunnel for proxy port 6674..."
+        ngrok http --domain=trolling-affluent-parcel.ngrok-free.dev 6674 --log=stdout > ngrok.log 2>&1 &
         NGROK_PID=$!
         echo $NGROK_PID > ngrok.pid
         
@@ -225,23 +193,10 @@ else
 fi
 echo ""
 
-# Step 4: Start FCE Extension Handler
-log "🔌 Step 4/5: Starting FCE Extension Handler"
-log "  • Handles VAULT_REBALANCE actions from TEE"
-log "  • Signs settlement transactions"
-
-if [[ ! -d "fce-extension" ]]; then
-    warn "fce-extension/ directory not found — skipping FCE extension"
-else
-    cd fce-extension
-    nohup npm start > ../fce-extension.log 2>&1 &
-    FCE_PID=$!
-    disown $FCE_PID
-    echo $FCE_PID > ../fce-extension.pid
-    cd ..
-
-    log "✅ FCE Extension started (PID: $FCE_PID, logs: fce-extension.log)"
-fi
+# Step 4: FCC handler runs inside extension-tee
+log "🔌 Step 4/5: FCC Extension Handler"
+log "  • TypeScript VAULT_REBALANCE handler runs inside the registered TEE container"
+log "  • Do not expose the standalone development server in a release"
 echo ""
 
 # Step 5: Start Frontend
@@ -278,7 +233,7 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 echo -e "${BLUE}📍 Service URLs:${NC}"
 echo -e "   Frontend:        ${CYAN}http://localhost:5200${NC}"
-echo -e "   FCE Extension:   ${CYAN}http://localhost:8080${NC}"
+echo -e "   FCC Proxy:       ${CYAN}http://localhost:6674${NC}"
 echo -e "   ngrok Dashboard: ${CYAN}http://localhost:4040${NC}"
 echo -e "   ngrok Public:    ${CYAN}https://trolling-affluent-parcel.ngrok-free.dev${NC}"
 echo -e "   Extension Proxy: ${CYAN}localhost:6673${NC} (internal) / ${CYAN}6674${NC} (external)"

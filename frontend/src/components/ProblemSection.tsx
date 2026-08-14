@@ -2,7 +2,6 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { TrendingDown, ShieldOff, Clock } from 'lucide-react';
 import xrpImg from '../assets/images/xrp.webp';
-import btcImg from '../assets/images/btc.webp';
 
 export const ProblemSection: React.FC = () => {
   return (
@@ -26,17 +25,15 @@ export const ProblemSection: React.FC = () => {
 
           <div className="flex items-center justify-center gap-4 mb-4">
             <img src={xrpImg} alt="XRP" className="w-14 h-14 sm:w-20 sm:h-20 object-contain drop-shadow-lg" />
-            <span className="text-2xl sm:text-3xl font-extrabold text-[#171414]/60">&</span>
-            <img src={btcImg} alt="BTC" className="w-14 h-14 sm:w-20 sm:h-20 object-contain drop-shadow-lg" />
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-extrabold text-[#171414] leading-tight mb-4" style={{ fontFamily: 'Manrope, sans-serif' }}>
-            Your XRP & BTC are <br />
+            Your XRP is <br />
             <span className="font-semibold text-[#4A4A4A]">just sitting there.</span>
           </h2>
 
           <p className="text-sm sm:text-base text-[#4A4A4A] leading-relaxed" style={{ fontFamily: 'Hanken Grotesk, sans-serif' }}>
-            Two of the biggest cryptocurrencies in the world, but their holders have no easy way to earn yield. Flux changes that — no middlemen, no wrapping, no giving up control of your coins.
+            XRP holders have few simple, non-custodial routes into DeFi yield. Flux uses Flare's FAssets and FDC to make the route inspectable end to end.
           </p>
         </motion.div>
 
@@ -58,7 +55,7 @@ export const ProblemSection: React.FC = () => {
               No way to earn yield
             </h3>
             <p className="text-sm text-[#4A4A4A] leading-relaxed" style={{ fontFamily: 'Hanken Grotesk, sans-serif' }}>
-              Your XRP and BTC just sit in your wallet. Unlike ETH or stablecoins, there's no easy way to put them to work in DeFi and earn passive income.
+              XRP can sit idle in a wallet. Unlike ETH or stablecoins, there are fewer straightforward ways to put it to work in DeFi and earn passive income.
             </p>
           </motion.div>
 

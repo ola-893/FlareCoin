@@ -49,6 +49,10 @@ const ERC20_ABI = [
     inputs: [{ name: 'account', type: 'address' }],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  {
+    type: 'function', name: 'decimals', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'uint8' }],
+  },
 ] as const;
 
 export interface AutoRebalanceConfig {
@@ -57,6 +61,7 @@ export interface AutoRebalanceConfig {
   parentVaultAddress: Address;
   maxRetries?: number;
   checkIntervalMs?: number;
+  requestCooldownMs?: number;
 }
 
 export class AutoRebalanceWatcher {
@@ -66,14 +71,17 @@ export class AutoRebalanceWatcher {
   private readonly parentVault: Address;
   private readonly maxRetries: number;
   private readonly checkIntervalMs: number;
+  private readonly requestCooldownMs: number;
   private timer: NodeJS.Timeout | null = null;
   private isChecking = false;
+  private lastRequestAt = 0;
 
   constructor(config: AutoRebalanceConfig) {
     this.account = privateKeyToAccount(config.executorPrivateKey);
     this.parentVault = config.parentVaultAddress;
-    this.maxRetries = config.maxRetries ?? 20;
+    this.maxRetries = config.maxRetries ?? 3;
     this.checkIntervalMs = config.checkIntervalMs ?? 30000;
+    this.requestCooldownMs = config.requestCooldownMs ?? 5 * 60 * 1000;
 
     this.publicClient = createPublicClient({
       chain: coston2,
@@ -141,16 +149,34 @@ export class AutoRebalanceWatcher {
         args: [this.parentVault],
       });
 
+      const decimals = await this.publicClient.readContract({
+        address: assetAddr,
+        abi: ERC20_ABI,
+        functionName: 'decimals',
+      });
+
       console.log(
-        `[AutoRebalance] Vault check — Idle: ${formatUnits(idleAssets, 18)} FXRP, ` +
-        `Threshold: ${formatUnits(threshold, 18)} FXRP`
+        `[AutoRebalance] Vault check — Idle: ${formatUnits(idleAssets, decimals)} FXRP, ` +
+        `Threshold: ${formatUnits(threshold, decimals)} FXRP`
       );
+
+      // A zero threshold makes every balance, including zero, eligible. Treat it
+      // as an explicit disabled state until the owner configures a real threshold.
+      if (threshold === 0n) {
+        console.warn('[AutoRebalance] Rebalance watcher disabled: vault rebalanceThreshold is zero.');
+        return false;
+      }
 
       if (idleAssets < threshold) {
         return false;
       }
 
-      console.log(`[AutoRebalance] 🚀 Idle assets (${formatUnits(idleAssets, 18)}) >= threshold (${formatUnits(threshold, 18)}). Triggering rebalance!`);
+      if (Date.now() - this.lastRequestAt < this.requestCooldownMs) {
+        console.log('[AutoRebalance] A rebalance instruction was sent recently; waiting for its FCC result.');
+        return false;
+      }
+
+      console.log(`[AutoRebalance] 🚀 Idle assets (${formatUnits(idleAssets, decimals)}) >= threshold (${formatUnits(threshold, decimals)}). Triggering rebalance!`);
       return await this.triggerRebalanceWithRetry();
     } finally {
       this.isChecking = false;
@@ -179,6 +205,7 @@ export class AutoRebalanceWatcher {
         const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
         if (receipt.status === 'success') {
+          this.lastRequestAt = Date.now();
           console.log(`[AutoRebalance] ✅ requestRebalance() succeeded in block ${receipt.blockNumber}! (Attempt ${attempt})`);
           console.log(`[AutoRebalance]    Explorer: https://coston2-explorer.flare.network/tx/${hash}`);
           return true;

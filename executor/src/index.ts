@@ -35,7 +35,7 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const EXECUTOR_PRIVATE_KEY = (process.env.EXECUTOR_PRIVATE_KEY || '0xce44c9cf317f66b5e3ea12ee1c92bb77a6dd2d02265b086eba66f8f338d5d7dc') as `0x${string}`;
+const EXECUTOR_PRIVATE_KEY = requireEnv('EXECUTOR_PRIVATE_KEY') as `0x${string}`;
 const COSTON2_RPC_URL = process.env.COSTON2_RPC_URL || 'https://coston2-api.flare.network/ext/C/rpc';
 const FASSET_ADAPTER_ADDRESS = (process.env.FASSET_ADAPTER_ADDRESS || '0x02D4F85301A2d1b3Bcc40BfD7937e6Fb2F5224a7') as Address;
 const PARENT_VAULT_ADDRESS = (process.env.PARENT_VAULT_ADDRESS || '0x01f64160E4928Eba5607aE294F9B66090Dc323B3') as Address;

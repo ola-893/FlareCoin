@@ -227,19 +227,33 @@ export class FlareExecutor {
     if (executorBalance >= fxrpAmount) {
       // Transfer FXRP from executor to FAssetAdapter
       console.log(`${logPrefix} Transferring ${formatUnits(fxrpAmount, decimals)} FXRP to FAssetAdapter...`);
-      const transferHash = await this.walletClient.writeContract({
-        chain: coston2,
-        account: this.account,
-        address: this.fxrp,
-        abi: ERC20_ABI,
-        functionName: 'transfer',
-        args: [this.fAssetAdapter, fxrpAmount],
-      });
+      let transferReceipt: any = null;
 
-      console.log(`${logPrefix} FXRP transfer tx: ${transferHash}`);
-      const transferReceipt = await this.publicClient.waitForTransactionReceipt({ hash: transferHash });
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const transferHash = await this.walletClient.writeContract({
+            chain: coston2,
+            account: this.account,
+            address: this.fxrp,
+            abi: ERC20_ABI,
+            functionName: 'transfer',
+            args: [this.fAssetAdapter, fxrpAmount],
+          });
 
-      if (transferReceipt.status !== 'success') {
+          console.log(`${logPrefix} FXRP transfer tx: ${transferHash}`);
+          transferReceipt = await this.publicClient.waitForTransactionReceipt({ hash: transferHash });
+          break;
+        } catch (err: any) {
+          console.warn(`${logPrefix} FXRP transfer attempt ${attempt}/3 failed (${err.shortMessage ?? err.message ?? err})`);
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, 2000));
+          } else {
+            return false;
+          }
+        }
+      }
+
+      if (transferReceipt?.status !== 'success') {
         console.error(`${logPrefix} FXRP transfer REVERTED.`);
         return false;
       }
@@ -305,51 +319,57 @@ export class FlareExecutor {
     const depositId = keccak256(`0x${clean}`);
     
     console.log(`${logPrefix} depositId: ${depositId}`);
-    console.log(`${logPrefix} Calling processDirectMint(${destinationTag}, ${depositId}, ${observedMintedAmount})...`);
 
-    try {
-      const mintHash = await this.walletClient.writeContract({
-        chain: coston2,
-        account: this.account,
-        address: this.fAssetAdapter,
-        abi: FASSET_ADAPTER_ABI,
-        functionName: 'processDirectMint',
-        args: [BigInt(destinationTag), depositId as `0x${string}`, observedMintedAmount],
-      });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`${logPrefix} Calling processDirectMint(${destinationTag}, ${depositId}, ${observedMintedAmount}) (attempt ${attempt}/3)...`);
+        const mintHash = await this.walletClient.writeContract({
+          chain: coston2,
+          account: this.account,
+          address: this.fAssetAdapter,
+          abi: FASSET_ADAPTER_ABI,
+          functionName: 'processDirectMint',
+          args: [BigInt(destinationTag), depositId as `0x${string}`, observedMintedAmount],
+        });
 
-      console.log(`${logPrefix} processDirectMint tx: ${mintHash}`);
-      const mintReceipt = await this.publicClient.waitForTransactionReceipt({ hash: mintHash });
+        console.log(`${logPrefix} processDirectMint tx: ${mintHash}`);
+        const mintReceipt = await this.publicClient.waitForTransactionReceipt({ hash: mintHash });
 
-      if (mintReceipt.status !== 'success') {
-        console.error(`${logPrefix} processDirectMint REVERTED. Check explorer: ${mintHash}`);
-        return false;
+        if (mintReceipt.status !== 'success') {
+          console.error(`${logPrefix} processDirectMint REVERTED. Check explorer: ${mintHash}`);
+          return false;
+        }
+
+        console.log(`${logPrefix} ✅ processDirectMint confirmed in block ${mintReceipt.blockNumber}!`);
+        console.log(`${logPrefix}    Explorer: https://coston2-explorer.flare.network/tx/${mintHash}`);
+
+        // ── 6. Persist ────────────────────────────────────────────────
+        store.add(xrplTxHash, destinationTag);
+        console.log(`${logPrefix} Recorded in local store. Total processed: ${store.count}`);
+
+        return true;
+      } catch (err: any) {
+        console.error(`${logPrefix} processDirectMint attempt ${attempt}/3 failed:`, err.shortMessage ?? err.message ?? err);
+
+        // Parse common revert reasons for helpful debugging
+        const msg = String(err.message ?? '');
+        if (msg.includes('NotTagExecutor')) {
+          console.error(`${logPrefix} ↳ The executor address (${this.account.address}) is not authorized for this tag.`);
+        } else if (msg.includes('TagExecutorNotActive')) {
+          console.error(`${logPrefix} ↳ The executor is set locally but not yet active on MintingTagManager (cooldown?).`);
+        } else if (msg.includes('UnexpectedMintBalance')) {
+          console.error(`${logPrefix} ↳ Balance mismatch — possible dust/griefing on the adapter, or a race condition.`);
+        } else if (msg.includes('DirectMintAlreadyProcessed')) {
+          console.error(`${logPrefix} ↳ This depositId was already processed on-chain (idempotency guard).`);
+          store.add(xrplTxHash, destinationTag); // mark locally too
+          return true;
+        }
+
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
       }
-
-      console.log(`${logPrefix} ✅ processDirectMint confirmed in block ${mintReceipt.blockNumber}!`);
-      console.log(`${logPrefix}    Explorer: https://coston2-explorer.flare.network/tx/${mintHash}`);
-
-      // ── 6. Persist ────────────────────────────────────────────────
-      store.add(xrplTxHash, destinationTag);
-      console.log(`${logPrefix} Recorded in local store. Total processed: ${store.count}`);
-
-      return true;
-    } catch (err: any) {
-      console.error(`${logPrefix} processDirectMint failed:`, err.shortMessage ?? err.message ?? err);
-
-      // Parse common revert reasons for helpful debugging
-      const msg = String(err.message ?? '');
-      if (msg.includes('NotTagExecutor')) {
-        console.error(`${logPrefix} ↳ The executor address (${this.account.address}) is not authorized for this tag.`);
-      } else if (msg.includes('TagExecutorNotActive')) {
-        console.error(`${logPrefix} ↳ The executor is set locally but not yet active on MintingTagManager (cooldown?).`);
-      } else if (msg.includes('UnexpectedMintBalance')) {
-        console.error(`${logPrefix} ↳ Balance mismatch — possible dust/griefing on the adapter, or a race condition.`);
-      } else if (msg.includes('DirectMintAlreadyProcessed')) {
-        console.error(`${logPrefix} ↳ This depositId was already processed on-chain (idempotency guard).`);
-        store.add(xrplTxHash, destinationTag); // mark locally too
-      }
-
-      return false;
     }
+    return false;
   }
 }

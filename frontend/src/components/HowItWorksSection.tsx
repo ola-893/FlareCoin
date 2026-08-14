@@ -3,16 +3,15 @@ import { ArrowRight, Layers, Lock, RefreshCw, Cpu, Sparkles } from 'lucide-react
 import { motion } from 'motion/react';
 import fluxYieldImg from '../assets/images/flux_yield_accumulation.webp';
 import xrpImg from '../assets/images/xrp.webp';
-import btcImg from '../assets/images/btc.webp';
 
 export const STEPS = [
   {
     step: '01',
     title: 'Deposit',
-    subtitle: 'XRP or BTC',
-    description: 'Send your native XRP or BTC directly to Flux. No wrapping, no bridges, no middlemen — your coins go straight in.',
+    subtitle: 'Native XRP',
+    description: 'Send native XRP to the FAssets Core Vault with your Flux destination tag. The payment is independently verified on Flare.',
     icon: Lock,
-    detail: 'Your original assets stay locked 1:1 in verified vaults. You always own what you deposited.'
+    detail: 'FDC proof verification—not a server watcher—authorizes your FXRP mint and vault deposit.'
   },
   {
     step: '02',
@@ -93,10 +92,6 @@ export const HowItWorksSection: React.FC<HowItWorksSectionProps> = ({ onConnectW
             <div className="absolute top-4 left-4 flex items-center gap-2 bg-white/80 backdrop-blur-sm rounded-full px-3 py-1.5 border border-[#1E1E1E]/10">
               <img src={xrpImg} alt="XRP" className="w-5 h-5 object-contain" />
               <span className="text-[10px] font-mono font-bold text-[#1E1E1E] uppercase">XRP</span>
-            </div>
-            <div className="absolute top-4 right-4 flex items-center gap-2 bg-white/80 backdrop-blur-sm rounded-full px-3 py-1.5 border border-[#1E1E1E]/10">
-              <img src={btcImg} alt="BTC" className="w-5 h-5 object-contain" />
-              <span className="text-[10px] font-mono font-bold text-[#1E1E1E] uppercase">BTC</span>
             </div>
           </div>
         </motion.div>

@@ -20,3 +20,6 @@ fce-extension-scaffold/
 
 # macOS metadata
 .DS_Store
+
+# Local Netlify folder
+.netlify

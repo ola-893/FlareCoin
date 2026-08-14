@@ -31,7 +31,7 @@ export const ARCHITECTURE_COMPONENTS: ArchitectureComponent[] = [
     description: 'Non-custodial ERC-4626 vault holding FAssets (FXRP, USDC.e) with EIP-712 signed rebalancing and a configurable liquidity buffer.',
     xRatio: 0.22, yRatio: 0.38, minScroll: 0.58, maxScroll: 0.88,
     tag: 'Non-Custodial',
-    technicalDetails: ['FAsset Direct Minting (Tag-based)', 'Queue-Settle Async Deposits', 'UUPS Upgradeable Proxy']
+    technicalDetails: ['FDC XRPPayment Proofs', 'Atomic FXRP Vault Deposits', 'UUPS Upgradeable Proxy']
   },
   {
     id: 'strategy-adapters',
@@ -157,7 +157,7 @@ export const HeroCanvas: React.FC<HeroCanvasProps> = ({ onExploreClick, onConnec
             animate={{ y: '0%', opacity: 1 }}
             transition={{ duration: 1.0, ease: [0.16, 1, 0.3, 1], delay: 1.0 }}
           >
-            Non-custodial yield for native XRP and BTC on Flare Network.
+            Non-custodial native-XRP yield on Flare Coston2.
           </motion.p>
         </div>
 

@@ -23,7 +23,7 @@ export const Footer: React.FC = () => {
             </div>
 
             <p className="max-w-sm text-xs leading-relaxed text-white/80" style={{ fontFamily: 'Hanken Grotesk, sans-serif' }}>
-              Flux is a non-custodial yield optimization protocol on Flare Network, routing native XRP and BTC through FAssets into EIP-712 signed strategy adapters. Currently deployed on Coston2 testnet.
+              Flux is a non-custodial yield optimization protocol on Flare Network. Its native-XRP route uses FDC-verified FAssets minting; FCC signs strategy-rebalance results. Currently deployed on Coston2 testnet.
             </p>
 
             <div className="flex items-center gap-3 pt-2">
@@ -38,7 +38,7 @@ export const Footer: React.FC = () => {
               <li><a href="#hero-disassembly" className="hover:text-[#E1BAC2]">ParentVault (ERC-4626)</a></li>
               <li><a href="#vaults" className="hover:text-[#E1BAC2]">Strategy Adapters</a></li>
               <li><a href="#how-it-works" className="hover:text-[#E1BAC2]">FAsset Direct Minting</a></li>
-              <li><a href="#tee-security" className="hover:text-[#E1BAC2]">EIP-712 Rebalancing</a></li>
+              <li><a href="#tee-security" className="hover:text-[#E1BAC2]">TEE Rebalancing</a></li>
             </ul>
           </div>
 
@@ -55,7 +55,7 @@ export const Footer: React.FC = () => {
           <div className="md:col-span-3 space-y-3 text-xs">
             <h4 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white">Security</h4>
             <p className="leading-relaxed text-white/80">
-              UUPS upgradeable contracts with EIP-712 signed rebalancing, TWAP validation, and slippage protection. Deployed on Flare Coston2 testnet.
+              UUPS upgradeable contracts with TEE-signed rebalancing, TWAP validation, and slippage protection. Deployed on Flare Coston2 testnet.
             </p>
            
           </div>

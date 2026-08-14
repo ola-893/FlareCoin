@@ -11,11 +11,13 @@ import {ITeeExtensionRegistry} from "../interfaces/ITeeExtensionRegistry.sol";
  */
 contract MockInstructionSender is IInstructionSender {
     uint256 public override extensionId;
+    uint256 public lastValue;
     uint256 private _instructionCounter;
 
     function sendInstructions(
         ITeeExtensionRegistry.TeeInstructionParams calldata params
     ) external payable override returns (bytes32 instructionId) {
+        lastValue = msg.value;
         // Generate a mock instruction ID
         instructionId = keccak256(abi.encode(_instructionCounter++, block.timestamp, msg.sender));
         

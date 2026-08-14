@@ -26,6 +26,7 @@ interface IParentVault {
     function withdraw(uint256 assets, address receiver, address owner) external returns (uint256 shares);
     function queueFAssetDeposit(bytes32 depositId, address receiver) external;
     function settleFAssetDeposit(bytes32 depositId, uint256 assets) external returns (uint256 shares);
+    function requestRebalance() external payable;
     function executeRebalance(
         bytes calldata resultData,
         bytes32 actionId,

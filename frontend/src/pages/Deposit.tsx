@@ -1,18 +1,20 @@
 import React, {useState, useEffect, useMemo} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useBalance} from 'wagmi';
-import {decodeEventLog, parseUnits, formatUnits} from 'viem';
+import {decodeEventLog, parseUnits, formatUnits, type Hex} from 'viem';
 import {motion, AnimatePresence} from 'motion/react';
 import {Lock, RefreshCw, Check, ArrowRight, Copy, Clock, AlertCircle, Coins, ShieldCheck, Wallet, Zap} from 'lucide-react';
 import xrpImg from '../assets/images/xrp.webp';
 import btcImg from '../assets/images/btc.webp';
-import {CONTRACTS, FASSET_ADAPTER_ABI, ASSET_MANAGER_ABI, MINTING_TAG_MANAGER_ABI, PARENT_VAULT_ABI} from '../config/contracts';
-import {requestSignedRebalance, checkFceHealth, type TeeActionResult} from '../services/fceClient';
+import {CONTRACTS, FASSET_ADAPTER_ABI, FDC_DIRECT_MINT_ADAPTER_ABI, FDC_HUB_ABI, ASSET_MANAGER_ABI, MINTING_TAG_MANAGER_ABI, PARENT_VAULT_ABI, FCE_CONFIG} from '../config/contracts';
+import {checkFceHealth, waitForSignedRebalance} from '../services/fceClient';
+import {FDC_REQUEST_FEE_MULTIPLIER, getFdcRequestFee, getXrpPaymentProof, isFdcVotingRoundFinalized, prepareXrpPaymentRequest, votingRoundForRequestBlock, type FdcXrpPaymentProof} from '../services/fdcClient';
 
 type DepositFlow = 'FASSET' | 'ERC4626';
 type FassetStep = 'SELECT' | 'RESERVE_TAG' | 'AWAITING_DEPOSIT' | 'READY_TO_SETTLE' | 'SETTLING' | 'DEPLOY' | 'COMPLETE';
 type Erc4626Step = 'ERC4626_SELECT' | 'APPROVE' | 'APPROVING' | 'DEPOSIT' | 'DEPOSITING' | 'COMPLETE_CDP';
 type DepositStep = FassetStep | Erc4626Step;
+type FdcStatus = 'idle' | 'preparing' | 'prepared' | 'requesting' | 'waiting' | 'ready' | 'relaying' | 'deferred' | 'failed';
 
 // Object-format ABI for decodeEventLog (human-readable strings don't work here)
 const EVENT_ABI = [{
@@ -21,7 +23,6 @@ const EVENT_ABI = [{
   inputs: [
     {indexed: true, name: 'tag', type: 'uint256'},
     {indexed: true, name: 'user', type: 'address'},
-    {indexed: true, name: 'executor', type: 'address'},
   ],
 }] as const;
 
@@ -48,6 +49,8 @@ const formatC2FLR = (wei: bigint): string => {
   return `${whole}.${fracStr}`;
 };
 
+const UNCONFIGURED_ADDRESS = '0x0000000000000000000000000000000000000000';
+
 // Fetches the FAsset Core Vault XRPL address from Flare's AssetManager contract
 const useCoreVaultAddress = () => {
   const {data: coreVaultAddress, isLoading, error} = useReadContract({
@@ -62,6 +65,7 @@ const useCoreVaultAddress = () => {
 export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   const navigate = useNavigate();
   const {address, isConnected} = useAccount();
+  const isFdcAdapterConfigured = CONTRACTS.fAssetAdapter.toLowerCase() !== UNCONFIGURED_ADDRESS;
 
   // Flow state
   const [depositFlow, setDepositFlow] = useState<DepositFlow>('FASSET');
@@ -72,6 +76,12 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   const [copied, setCopied] = useState(false);
   const [xrplTxHash, setXrplTxHash] = useState<string | null>(null);
   const [xrplAmount, setXrplAmount] = useState<string | null>(null);
+  const [fdcStatus, setFdcStatus] = useState<FdcStatus>('idle');
+  const [fdcRequestData, setFdcRequestData] = useState<Hex | null>(null);
+  const [fdcRequestFee, setFdcRequestFee] = useState<bigint | null>(null);
+  const [fdcRoundId, setFdcRoundId] = useState<bigint | null>(null);
+  const [fdcProof, setFdcProof] = useState<FdcXrpPaymentProof | null>(null);
+  const [fdcError, setFdcError] = useState<string | null>(null);
 
   // CDP-specific state
   const [cdpAmount, setCdpAmount] = useState('');
@@ -79,14 +89,18 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 
   // Always start at SELECT phase — but remember any previously saved tag.
   const [savedTag, setSavedTag] = useState<string | null>(null);
+  // Tags registered after the FDC adapter migration may not appear in the
+  // read-query cache until the next render/refetch. Keep that just-created tag
+  // usable in this session, without treating arbitrary browser state as valid.
+  const [registeredTagThisSession, setRegisteredTagThisSession] = useState<string | null>(null);
   // True while the pending tag registration is an "escape" to a brand-new tag
   // (used so a failed registration retries the same intent).
   const [isReservingNewTag, setIsReservingNewTag] = useState(false);
 
-  // ─── Tag Activation Cooldown ──────────────────────────────────────────────
-  // Flare's MintingTagManager has a cooldown after setAllowedExecutor is called.
-  // Users must wait before sending XRP, otherwise the executor can't process it.
-  const TAG_COOLDOWN_SECONDS = 120; // 2 minutes (conservative estimate)
+  // The FDC adapter leaves the tag executor open and instead binds every FDC
+  // proof to the adapter. That removes the MintingTagManager executor-change
+  // cooldown and, crucially, removes the watcher/operator key.
+  const TAG_COOLDOWN_SECONDS = 0;
   const [tagCooldownDeadline, setTagCooldownDeadline] = useState<number | null>(null);
   const [tagCooldownRemaining, setTagCooldownRemaining] = useState(0);
   const [tagReady, setTagReady] = useState(false);
@@ -163,14 +177,14 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 
   // ─── FAsset Flow Hooks ────────────────────────────────────────────────────
   const {data: userReservedTags, isLoading: isTagsLoading} = useReadContract({
-    address: CONTRACTS.mintingTagManager,
-    abi: MINTING_TAG_MANAGER_ABI,
-    functionName: 'reservedTagsForOwner',
+    address: CONTRACTS.fAssetAdapter,
+    abi: FDC_DIRECT_MINT_ADAPTER_ABI,
+    functionName: 'getTagsForUser',
     args: address ? [address] : undefined,
-    query: {enabled: !!address && depositFlow === 'FASSET'},
+    query: {enabled: !!address && isFdcAdapterConfigured && depositFlow === 'FASSET'},
   });
   const existingTags = (userReservedTags as bigint[] | undefined) ?? [];
-  const hasExistingTag = existingTags.length > 0 || !!savedTag;
+  const hasExistingTag = existingTags.length > 0;
 
   // The tag this session deposits to: prefer the saved/active tag (if it is
   // still reserved on-chain), otherwise the first reserved tag.
@@ -179,34 +193,21 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
     return existingTags.length > 0 ? existingTags[0].toString() : null;
   }, [savedTag, existingTags]);
 
-  // Surface any unclaimed deposit already sitting on the candidate tag (e.g. a
-  // payment that arrived in an earlier session) on the SELECT screen, so the
-  // user isn't surprised by it later and can settle it or move to a fresh tag.
-  const {data: candidateDepositIdRaw} = useReadContract({
-    address: CONTRACTS.fAssetAdapter as `0x${string}`,
-    abi: FASSET_ADAPTER_ABI,
-    functionName: 'pendingDepositForTag',
-    args: candidateTag ? [BigInt(candidateTag)] : undefined,
-    query: {
-      enabled: !!address && step === 'SELECT' && !!candidateTag && depositFlow === 'FASSET',
-      refetchInterval: 5000,
-    },
-  });
-  const candidateDepositId = candidateDepositIdRaw as `0x${string}` | undefined;
-  const hasCandidateDeposit = !!candidateDepositId
-    && candidateDepositId !== '0x0000000000000000000000000000000000000000000000000000000000000000';
+  // The previous watcher-based adapter used its own tags. A saved tag from that
+  // contract (for example tag 438) must never be offered to the FDC adapter:
+  // its direct-mint recipient is the retired contract, not this one.
+  useEffect(() => {
+    if (depositFlow !== 'FASSET' || isTagsLoading || !savedTag) return;
+    if (existingTags.some(tag => tag.toString() === savedTag)) return;
 
-  const {data: candidateMintRaw} = useReadContract({
-    address: CONTRACTS.fAssetAdapter as `0x${string}`,
-    abi: FASSET_ADAPTER_ABI,
-    functionName: 'pendingDirectMints',
-    args: hasCandidateDeposit ? [candidateDepositId] : undefined,
-    query: {
-      enabled: hasCandidateDeposit && step === 'SELECT',
-      refetchInterval: 5000,
-    },
-  });
-  const candidatePendingAssets = candidateMintRaw ? BigInt((candidateMintRaw as any)[2]) : undefined;
+    localStorage.removeItem('flux-deposit-state');
+    setSavedTag(null);
+    setTagCooldownDeadline(null);
+    setTagCooldownRemaining(0);
+    setTagReady(false);
+  }, [depositFlow, existingTags, isTagsLoading, savedTag]);
+
+  const candidatePendingAssets = undefined;
 
   const saveState = (s: DepositStep, tag?: string, depId?: string) => {
     localStorage.setItem('flux-deposit-state', JSON.stringify({
@@ -256,30 +257,33 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   });
   const reservationFee: bigint = (reservationFeeRaw as bigint | undefined) ?? 0n;
 
+  // Quote the live FAssets fees before the user sends XRP. The actual amount
+  // is still calculated and enforced by AssetManager in the proof relay.
+  const {data: directMintingFeeBipsRaw} = useReadContract({
+    address: CONTRACTS.assetManagerFXRP,
+    abi: ASSET_MANAGER_ABI,
+    functionName: 'getDirectMintingFeeBIPS',
+    query: {enabled: depositFlow === 'FASSET'},
+  });
+  const {data: directMintingMinimumFeeRaw} = useReadContract({
+    address: CONTRACTS.assetManagerFXRP,
+    abi: ASSET_MANAGER_ABI,
+    functionName: 'getDirectMintingMinimumFeeUBA',
+    query: {enabled: depositFlow === 'FASSET'},
+  });
+  const {data: directMintingExecutorFeeRaw} = useReadContract({
+    address: CONTRACTS.assetManagerFXRP,
+    abi: ASSET_MANAGER_ABI,
+    functionName: 'getDirectMintingExecutorFeeUBA',
+    query: {enabled: depositFlow === 'FASSET'},
+  });
+  const directMintingFeeBips = directMintingFeeBipsRaw as bigint | undefined;
+  const directMintingMinimumFee = directMintingMinimumFeeRaw as bigint | undefined;
+  const directMintingExecutorFee = directMintingExecutorFeeRaw as bigint | undefined;
+
   const {data: balanceData} = useBalance({address});
   const nativeBalance = balanceData?.value ?? 0n;
   const hasEnoughBalance = nativeBalance >= reservationFee;
-
-  const isDeployed = CONTRACTS.fAssetAdapter !== '0x0000000000000000000000000000000000000000';
-  const {data: pendingDepositRaw} = useReadContract({
-    address: CONTRACTS.fAssetAdapter,
-    abi: FASSET_ADAPTER_ABI,
-    functionName: 'pendingDepositForTag',
-    args: reservedTag ? [BigInt(reservedTag)] : undefined,
-    query: {
-      enabled: isDeployed && !!reservedTag && step === 'AWAITING_DEPOSIT',
-      refetchInterval: 5000,
-    },
-  });
-  const pendingDeposit = pendingDepositRaw as string | undefined;
-
-  useEffect(() => {
-    if (pendingDeposit && pendingDeposit !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
-      setDepositId(pendingDeposit);
-      setStep('READY_TO_SETTLE');
-      saveState('READY_TO_SETTLE', undefined, pendingDeposit);
-    }
-  }, [pendingDeposit]);
 
   useEffect(() => {
     if (registerReceipt && !isRegisterConfirming && step === 'RESERVE_TAG') {
@@ -304,6 +308,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 
         if (actualTag) {
           setReservedTag(actualTag);
+          setRegisteredTagThisSession(actualTag);
           setStep('AWAITING_DEPOSIT');
           // Start cooldown timer
           const deadline = Date.now() + TAG_COOLDOWN_SECONDS * 1000;
@@ -359,6 +364,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   }, [isSettling]);
 
   const handleReserveTag = () => {
+    if (!isFdcAdapterConfigured || asset !== 'XRP') return;
     setIsReservingNewTag(false);
     if (candidateTag) {
       setReservedTag(candidateTag);
@@ -369,18 +375,10 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
       setStep('AWAITING_DEPOSIT');
       return;
     }
-    if (savedTag) {
-      setReservedTag(savedTag);
-      if (!tagCooldownDeadline || tagCooldownDeadline <= Date.now()) setTagReady(true);
-      saveState('AWAITING_DEPOSIT', savedTag);
-      setStep('AWAITING_DEPOSIT');
-      return;
-    }
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerTag({
       address: CONTRACTS.fAssetAdapter,
-      abi: FASSET_ADAPTER_ABI as any,
+      abi: FDC_DIRECT_MINT_ADAPTER_ABI as any,
       functionName: 'registerMintingTag',
       value: reservationFee,
       gas: 500_000n,
@@ -391,11 +389,12 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   // Reserves a brand-new minting tag so a user who doesn't recognize an existing
   // pending deposit on their current tag can start a clean deposit flow instead.
   const handleReserveNewTag = () => {
+    if (!isFdcAdapterConfigured || asset !== 'XRP') return;
     setIsReservingNewTag(true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerTag({
       address: CONTRACTS.fAssetAdapter,
-      abi: FASSET_ADAPTER_ABI as any,
+      abi: FDC_DIRECT_MINT_ADAPTER_ABI as any,
       functionName: 'registerMintingTag',
       value: reservationFee,
       gas: 500_000n,
@@ -421,11 +420,196 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
     setStep('SETTLING');
   };
 
-  // Write: Execute rebalance to deploy idle capital to strategy
+  // ─── FDC-verified native XRP mint ────────────────────────────────────────
+  // The browser only prepares/retrieves public FDC data. It never decides
+  // whether an XRPL payment is valid: the live AssetManager verifies the proof
+  // on-chain inside executeFdcDirectMint before it can mint vault shares.
+  const {writeContract: requestFdcAttestation, data: fdcRequestHash, isPending: isFdcRequesting, error: fdcRequestWriteError} = useWriteContract();
+  const {data: fdcRequestReceipt, isLoading: isFdcRequestConfirming, isSuccess: isFdcRequestSuccess, error: fdcRequestReceiptError} = useWaitForTransactionReceipt({hash: fdcRequestHash});
+  const {writeContract: relayFdcMint, data: fdcMintHash, isPending: isFdcMinting, error: fdcMintWriteError} = useWriteContract();
+  const {data: fdcMintReceipt, isLoading: isFdcMintConfirming, isSuccess: isFdcMintSuccess, error: fdcMintReceiptError} = useWaitForTransactionReceipt({hash: fdcMintHash});
+
+  const handlePrepareFdcRequest = async (hash: string) => {
+    const isCurrentAdapterTag = !!reservedTag && (
+      registeredTagThisSession === reservedTag
+      || existingTags.some(tag => tag.toString() === reservedTag)
+    );
+    if (!isCurrentAdapterTag) {
+      setFdcStatus('failed');
+      setFdcError('This saved minting tag belongs to the retired adapter. Return to deposit selection and reserve a fresh FDC tag before sending XRP.');
+      return;
+    }
+
+    setFdcError(null);
+    setFdcProof(null);
+    setFdcRoundId(null);
+    setXrplTxHash(hash.replace(/^0x/i, '').toUpperCase());
+    setFdcStatus('preparing');
+    try {
+      const requestData = await prepareXrpPaymentRequest(hash, CONTRACTS.fAssetAdapter);
+      const fee = await getFdcRequestFee(requestData);
+      setFdcRequestData(requestData);
+      setFdcRequestFee(fee);
+      setFdcStatus('prepared');
+    } catch (error) {
+      setFdcStatus('failed');
+      setFdcError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleRequestFdcAttestation = () => {
+    if (!fdcRequestData || fdcRequestFee === null) return;
+    setFdcError(null);
+    setFdcStatus('requesting');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    requestFdcAttestation({
+      address: CONTRACTS.fdcHub,
+      abi: FDC_HUB_ABI as any,
+      functionName: 'requestAttestation',
+      args: [fdcRequestData],
+      value: fdcRequestFee,
+    } as any);
+  };
+
+  useEffect(() => {
+    if (!fdcRequestWriteError && !fdcRequestReceiptError) return;
+    setFdcStatus('failed');
+    const error = fdcRequestWriteError || fdcRequestReceiptError;
+    setFdcError(error?.message || 'The FDC attestation request was not confirmed.');
+  }, [fdcRequestWriteError, fdcRequestReceiptError]);
+
+  useEffect(() => {
+    if (!isFdcRequestSuccess || !fdcRequestReceipt || !fdcRequestData) return;
+    let cancelled = false;
+    votingRoundForRequestBlock(fdcRequestReceipt.blockNumber)
+      .then((roundId) => {
+        if (cancelled) return;
+        setFdcRoundId(roundId);
+        setFdcStatus('waiting');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setFdcStatus('failed');
+        setFdcError(error instanceof Error ? error.message : String(error));
+      });
+    return () => { cancelled = true; };
+  }, [isFdcRequestSuccess, fdcRequestReceipt, fdcRequestData]);
+
+  useEffect(() => {
+    if (fdcStatus !== 'waiting' || !fdcRequestData || fdcRoundId === null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let availabilityMissesAfterFinalization = 0;
+
+    const poll = async () => {
+      try {
+        const isFinalized = await isFdcVotingRoundFinalized(fdcRoundId);
+        if (cancelled) return;
+        if (!isFinalized) {
+          timer = setTimeout(poll, 10_000);
+          return;
+        }
+
+        const proof = await getXrpPaymentProof(fdcRequestData, fdcRoundId);
+        if (cancelled) return;
+        if (proof) {
+          if (!reservedTag || proof.data.responseBody.destinationTag !== BigInt(reservedTag)) {
+            throw new Error('The FDC proof destination tag does not match your reserved Flux tag.');
+          }
+          if (directMintingFeeBips !== undefined && directMintingMinimumFee !== undefined && directMintingExecutorFee !== undefined) {
+            const received = proof.data.responseBody.receivedAmount;
+            const percentageFee = (received * directMintingFeeBips) / 10_000n;
+            const mintingFee = percentageFee > directMintingMinimumFee ? percentageFee : directMintingMinimumFee;
+            if (received <= mintingFee + directMintingExecutorFee) {
+              throw new Error(`This payment is too small after the live FAssets minting and executor fees. Send more than ${formatUnits(mintingFee + directMintingExecutorFee, 6)} XRP to this tag, then request a new attestation.`);
+            }
+          }
+          setFdcProof(proof);
+          setXrplAmount(formatUnits(proof.data.responseBody.receivedAmount, 6));
+          setFdcStatus('ready');
+          return;
+        }
+
+        availabilityMissesAfterFinalization += 1;
+        if (availabilityMissesAfterFinalization >= 6) {
+          setFdcStatus('prepared');
+          setFdcError('FDC finalized this round without selecting the request. No additional XRP is needed: submit the FDC proof request again for this same transaction.');
+          return;
+        }
+        timer = setTimeout(poll, 10_000);
+      } catch (error) {
+        if (cancelled) return;
+        setFdcStatus('failed');
+        setFdcError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    void poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [fdcStatus, fdcRequestData, fdcRoundId, reservedTag, directMintingFeeBips, directMintingMinimumFee, directMintingExecutorFee]);
+
+  const handleRelayFdcMint = () => {
+    if (!fdcProof) return;
+    setFdcStatus('relaying');
+    setFdcError(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    relayFdcMint({
+      address: CONTRACTS.fAssetAdapter,
+      abi: FDC_DIRECT_MINT_ADAPTER_ABI as any,
+      functionName: 'executeFdcDirectMint',
+      args: [fdcProof],
+    } as any);
+  };
+
+  useEffect(() => {
+    if (!fdcMintWriteError && !fdcMintReceiptError) return;
+    setFdcStatus('failed');
+    const error = fdcMintWriteError || fdcMintReceiptError;
+    setFdcError(error?.message || 'The FDC proof relay was not confirmed.');
+  }, [fdcMintWriteError, fdcMintReceiptError]);
+
+  useEffect(() => {
+    if (!isFdcMintSuccess || !fdcMintReceipt) return;
+    let deferred = false;
+    for (const log of fdcMintReceipt.logs) {
+      try {
+        const decoded = decodeEventLog({abi: FDC_DIRECT_MINT_ADAPTER_ABI, data: log.data, topics: log.topics});
+        if (decoded.eventName === 'FdcDirectMintDeferred') deferred = true;
+      } catch {
+        // Ignore logs from other contracts in the same transaction.
+      }
+    }
+    if (deferred) {
+      setFdcStatus('deferred');
+      return;
+    }
+    setFdcStatus('ready');
+    setStep('DEPLOY');
+    saveState('DEPLOY');
+  }, [isFdcMintSuccess, fdcMintReceipt]);
+
+  // FCC rebalance flow: the connected wallet creates the on-chain instruction,
+  // then later relays the signed result after the public FCC proxy has produced it.
+  const {writeContract: requestRebalance, data: rebalanceRequestHash, isPending: isRequestingRebalance, error: rebalanceRequestError} = useWriteContract();
+  const {isLoading: isRebalanceRequestConfirming, isSuccess: isRebalanceRequestSuccess, error: rebalanceRequestReceiptError} = useWaitForTransactionReceipt({hash: rebalanceRequestHash});
+
+  const {data: vaultTeeAddressRaw} = useReadContract({
+    address: CONTRACTS.parentVault,
+    abi: PARENT_VAULT_ABI,
+    functionName: 'teeAddress',
+  });
+  const {refetch: refetchLastInstructionId} = useReadContract({
+    address: CONTRACTS.parentVault,
+    abi: PARENT_VAULT_ABI,
+    functionName: 'lastInstructionId',
+    query: {enabled: false},
+  });
+
+  // Write: permissionless relay of the signed FCC action result.
   const {writeContract: writeRebalance, data: rebalanceHash, isPending: isRebalancing, error: rebalanceError} = useWriteContract();
   const {isLoading: isRebalanceConfirming, isSuccess: isRebalanceSuccess, error: rebalanceReceiptError} = useWaitForTransactionReceipt({hash: rebalanceHash});
 
   const [isRequestingSignature, setIsRequestingSignature] = useState(false);
+  const [pendingRebalanceRequest, setPendingRebalanceRequest] = useState(false);
   const [fceError, setFceError] = useState<string | null>(null);
   const [deploySuccess, setDeploySuccess] = useState(false);
 
@@ -437,8 +621,6 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   useEffect(() => {
     if (rebalanceHash && isRebalanceSuccess && !deploySuccess) {
       setDeploySuccess(true);
-      setAutoDeployStatus('success');
-      localStorage.removeItem('flux-auto-deploy');
     }
   }, [rebalanceHash, isRebalanceSuccess, deploySuccess]);
 
@@ -448,94 +630,91 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
     return () => clearTimeout(timer);
   }, [deploySuccess, navigate]);
 
-  // ─── Auto-deploy fallback state ──────────────────────────────────────────
-  const AUTO_DEPLOY_SECONDS = 300; // 5 minutes default
-  const [autoDeployDeadline, setAutoDeployDeadline] = useState<number | null>(null);
-  const [autoDeployStatus, setAutoDeployStatus] = useState<'idle' | 'counting' | 'deploying' | 'success' | 'failed'>('idle');
-  const [autoDeployError, setAutoDeployError] = useState<string | null>(null);
-  const [autoDeployRemaining, setAutoDeployRemaining] = useState(AUTO_DEPLOY_SECONDS);
-
-  // Restore auto-deploy state from localStorage on mount
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('flux-auto-deploy');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.deadline && parsed.deadline > Date.now()) {
-          setAutoDeployDeadline(parsed.deadline);
-          setAutoDeployStatus('counting');
-          setXrplAmount(parsed.xrplAmount || null);
-        } else if (parsed.deadline && parsed.deadline <= Date.now()) {
-          // Deadline passed while away — trigger immediately
-          setAutoDeployDeadline(parsed.deadline);
-          setAutoDeployStatus('deploying');
-          setXrplAmount(parsed.xrplAmount || null);
-        }
-      }
-    } catch { /* ignore */ }
-  }, []);
-
   const handleDeployToStrategy = async () => {
-    // Cancel any pending auto-deploy if user manually deploys
-    cancelAutoDeploy();
     setIsRequestingSignature(true);
     setFceError(null);
 
     try {
-      // 1. Check FCE extension health
+      // Check the public result endpoint before opening the wallet. The vault,
+      // not the browser, creates the FCC instruction and selects its input.
       const isHealthy = await checkFceHealth();
       if (!isHealthy) {
-        throw new Error('TEE extension is not available. Please ensure the FCE extension is running on port 8080.');
+        throw new Error('FCC result endpoint is unavailable or not configured. Please try again shortly.');
       }
 
-      // 2. Request signed rebalance payload from TEE
-      const teeResult: TeeActionResult = await requestSignedRebalance({
-        vaultAddress: CONTRACTS.parentVault,
-        idleAssets: xrplAmount ? BigInt(Math.floor(parseFloat(xrplAmount) * 1e6)) : 0n,
-        // XRP deposits are routed to the FTSO v2 Delegation adapter
-        approvedStrategies: [CONTRACTS.strategies.ftsoV2Delegation],
-        liquidityBufferBps: 1000, // 10% buffer
-      });
-
-      console.log('[Deploy] TEE result received, submitting to chain...');
-      console.log('[Deploy] Action ID:', teeResult.actionId);
-      console.log('[Deploy] Status:', teeResult.status);
-
-      // 3. Submit to executeRebalance() with 5-param signature
+      setPendingRebalanceRequest(true);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      writeRebalance({
+      requestRebalance({
         address: CONTRACTS.parentVault,
         abi: PARENT_VAULT_ABI as any,
-        functionName: 'executeRebalance',
-        args: [
-          teeResult.resultData,       // bytes: ABI-encoded RebalancePayload
-          teeResult.actionId,          // bytes32: instruction ID
-          teeResult.submissionTag,     // string: submission identifier
-          teeResult.status,            // uint8: 1 = success
-          teeResult.signature,         // bytes: EIP-191 TEE signature
-        ],
+        functionName: 'requestRebalance',
+        value: FCE_CONFIG.instructionFeeWei,
       } as any);
-
-      setIsRequestingSignature(false);
     } catch (err) {
       console.error('[Deploy] Error:', err);
       setFceError(err instanceof Error ? err.message : String(err));
       setIsRequestingSignature(false);
+      setPendingRebalanceRequest(false);
     }
   };
 
+  useEffect(() => {
+    if (!rebalanceRequestError && !rebalanceRequestReceiptError) return;
+    const error = rebalanceRequestError || rebalanceRequestReceiptError;
+    setFceError(error?.message || 'The rebalance request was not confirmed.');
+    setIsRequestingSignature(false);
+    setPendingRebalanceRequest(false);
+  }, [rebalanceRequestError, rebalanceRequestReceiptError]);
+
+  useEffect(() => {
+    if (!pendingRebalanceRequest || !isRebalanceRequestSuccess || !rebalanceRequestHash) return;
+
+    const teeAddress = vaultTeeAddressRaw as `0x${string}` | undefined;
+    if (!teeAddress || teeAddress === '0x0000000000000000000000000000000000000000') {
+      setFceError('The vault has no active TEE machine configured.');
+      setIsRequestingSignature(false);
+      setPendingRebalanceRequest(false);
+      return;
+    }
+
+    let cancelled = false;
+    const relaySignedResult = async () => {
+      try {
+        const response = await refetchLastInstructionId();
+        const instructionId = response.data as `0x${string}` | undefined;
+        if (!instructionId || instructionId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+          throw new Error('The rebalance request was confirmed but no FCC instruction ID was recorded.');
+        }
+
+        const teeResult = await waitForSignedRebalance(instructionId, teeAddress);
+        if (cancelled) return;
+
+        // The contract independently verifies this exact signature and signer.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        writeRebalance({
+          address: CONTRACTS.parentVault,
+          abi: PARENT_VAULT_ABI as any,
+          functionName: 'executeRebalance',
+          args: [teeResult.resultData, teeResult.actionId, teeResult.submissionTag, teeResult.status, teeResult.signature],
+        } as any);
+      } catch (err) {
+        if (!cancelled) {
+          setFceError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsRequestingSignature(false);
+          setPendingRebalanceRequest(false);
+        }
+      }
+    };
+
+    relaySignedResult();
+    return () => { cancelled = true; };
+  }, [pendingRebalanceRequest, isRebalanceRequestSuccess, rebalanceRequestHash, vaultTeeAddressRaw, refetchLastInstructionId, writeRebalance]);
+
   const handleSkipDeploy = () => {
     setStep('COMPLETE');
-    // Start auto-deploy countdown
-    const deadline = Date.now() + AUTO_DEPLOY_SECONDS * 1000;
-    setAutoDeployDeadline(deadline);
-    setAutoDeployStatus('counting');
-    setAutoDeployRemaining(AUTO_DEPLOY_SECONDS);
-    localStorage.setItem('flux-auto-deploy', JSON.stringify({
-      deadline,
-      xrplAmount,
-      strategy: CONTRACTS.strategies.ftsoV2Delegation,
-    }));
   };
 
   const handleCopyTag = () => {
@@ -549,31 +728,10 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   const {coreVaultAddress, isLoading: isVaultLoading} = useCoreVaultAddress();
   const [vaultCopied, setVaultCopied] = useState(false);
 
-  // Poll pendingDirectMints to check if executor has processed the deposit
-  const {data: pendingDirectMint, isLoading: isPendingDirectMintLoading} = useReadContract({
-    address: CONTRACTS.fAssetAdapter,
-    abi: FASSET_ADAPTER_ABI,
-    functionName: 'pendingDirectMints',
-    args: depositId ? [depositId as `0x${string}`] : undefined,
-    query: {
-      enabled: step === 'READY_TO_SETTLE' && !!depositId,
-      refetchInterval: 3000, // Poll every 3 seconds
-    },
-  });
-
-  // Check if deposit has been processed by executor
-  const isDepositProcessedOnChain = pendingDirectMint 
-    ? (pendingDirectMint as any)[0] !== '0x0000000000000000000000000000000000000000' && (pendingDirectMint as any)[2] > 0n
-    : false;
-
-  useEffect(() => {
-    if (pendingDirectMint && step === 'READY_TO_SETTLE') {
-      const assets = (pendingDirectMint as any)[2];
-      if (assets && assets > 0n) {
-        setXrplAmount((Number(assets) / 1e6).toFixed(6));
-      }
-    }
-  }, [pendingDirectMint, step]);
+  // Direct mints settle atomically with the FDC proof; no off-chain executor
+  // poll or secondary settlement transaction is involved.
+  const isDepositProcessedOnChain = false;
+  const isPendingDirectMintLoading = false;
 
   // ─── CDP ERC-4626 Flow Hooks ──────────────────────────────────────────────
 
@@ -697,93 +855,23 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
     }
   }, [depositHash, isDepositConfirming, step, refetchCdpBalance]);
 
-  // ─── Reset ────────────────────────────────────────────────────────────────
-  const cancelAutoDeploy = () => {
-    setAutoDeployDeadline(null);
-    setAutoDeployStatus('idle');
-    setAutoDeployError(null);
-    localStorage.removeItem('flux-auto-deploy');
-  };
-
-  // Countdown timer effect
-  useEffect(() => {
-    if (autoDeployStatus !== 'counting' || !autoDeployDeadline) return;
-
-    const interval = setInterval(() => {
-      const remaining = Math.max(0, Math.ceil((autoDeployDeadline - Date.now()) / 1000));
-      setAutoDeployRemaining(remaining);
-
-      if (remaining <= 0) {
-        clearInterval(interval);
-        // Auto-trigger deploy
-        setAutoDeployStatus('deploying');
-        triggerAutoDeploy();
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [autoDeployStatus, autoDeployDeadline]);
-
-  const triggerAutoDeploy = async () => {
-    setAutoDeployError(null);
-    try {
-      const isHealthy = await checkFceHealth();
-      if (!isHealthy) {
-        throw new Error('TEE extension not available. Auto-deploy skipped.');
-      }
-
-      const teeResult = await requestSignedRebalance({
-        vaultAddress: CONTRACTS.parentVault,
-        idleAssets: xrplAmount ? BigInt(Math.floor(parseFloat(xrplAmount) * 1e6)) : 0n,
-        // XRP deposits are routed to the FTSO v2 Delegation adapter
-        approvedStrategies: [CONTRACTS.strategies.ftsoV2Delegation],
-        liquidityBufferBps: 1000,
-      });
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      writeRebalance({
-        address: CONTRACTS.parentVault,
-        abi: PARENT_VAULT_ABI as any,
-        functionName: 'executeRebalance',
-        args: [
-          teeResult.resultData,
-          teeResult.actionId,
-          teeResult.submissionTag,
-          teeResult.status,
-          teeResult.signature,
-        ],
-      } as any);
-
-      localStorage.removeItem('flux-auto-deploy');
-    } catch (err) {
-      console.error('[AutoDeploy] Error:', err);
-      setAutoDeployError(err instanceof Error ? err.message : String(err));
-      setAutoDeployStatus('failed');
-      localStorage.removeItem('flux-auto-deploy');
-    }
-  };
-
-  // Watch for successful rebalance during auto-deploy
-  useEffect(() => {
-    if (autoDeployStatus === 'deploying' && rebalanceHash && !isRebalanceConfirming) {
-      setAutoDeployStatus('success');
-      localStorage.removeItem('flux-auto-deploy');
-    }
-  }, [autoDeployStatus, rebalanceHash, isRebalanceConfirming]);
-
   const handleReset = () => {
     localStorage.removeItem('flux-deposit-state');
-    localStorage.removeItem('flux-auto-deploy');
-    setAutoDeployDeadline(null);
-    setAutoDeployStatus('idle');
     setStep(depositFlow === 'ERC4626' ? 'ERC4626_SELECT' : 'SELECT');
     setReservedTag(null);
+    setRegisteredTagThisSession(null);
     setDepositId(null);
     setCdpAmount('');
     setCdpTxHash(undefined);
     setTagCooldownDeadline(null);
     setTagCooldownRemaining(0);
     setTagReady(false);
+    setFdcStatus('idle');
+    setFdcRequestData(null);
+    setFdcRequestFee(null);
+    setFdcRoundId(null);
+    setFdcProof(null);
+    setFdcError(null);
   };
 
   const handleNewDeposit = () => {
@@ -798,6 +886,12 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
       setTagCooldownDeadline(null);
       setTagCooldownRemaining(0);
       setTagReady(false);
+      setFdcStatus('idle');
+      setFdcRequestData(null);
+      setFdcRequestFee(null);
+      setFdcRoundId(null);
+      setFdcProof(null);
+      setFdcError(null);
       setStep('AWAITING_DEPOSIT');
       saveState('AWAITING_DEPOSIT');
     }
@@ -839,7 +933,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
   };
 
   // Determine current step index for indicator
-  const fassetSteps = ['SELECT', 'RESERVE_TAG', 'AWAITING_DEPOSIT', 'READY_TO_SETTLE', 'DEPLOY', 'COMPLETE'];
+  const fassetSteps = ['SELECT', 'RESERVE_TAG', 'AWAITING_DEPOSIT', 'DEPLOY', 'COMPLETE'];
   const erc4626Steps = ['ERC4626_SELECT', 'APPROVE', 'DEPOSIT', 'COMPLETE_CDP'];
   const currentSteps = depositFlow === 'FASSET' ? fassetSteps : erc4626Steps;
 
@@ -864,7 +958,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
           <p className="text-sm text-[#4A4A4A] mt-2">
             {depositFlow === 'ERC4626'
               ? 'Deposit CDP tokens directly into the vault to earn yield from Enosys V3 LP'
-              : 'Send native XRP or BTC → FAssets are minted → Flux tokens are issued'}
+              : 'Send native XRP → FAssets verify it → Flux vault shares are issued'}
           </p>
         </motion.div>
 
@@ -879,7 +973,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
             }`}
           >
             <Coins className="w-3.5 h-3.5" />
-            Native Deposit 
+            Native XRP
           </button>
           <button
             onClick={switchToErc4626}
@@ -896,18 +990,6 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 
         {/* Step Indicator */}
         <StepIndicator steps={currentSteps} currentStep={step} />
-
-        {/* Auto-deploy banner */}
-        {autoDeployStatus !== 'idle' && depositFlow === 'FASSET' && (
-          <AutoDeployBanner
-            status={autoDeployStatus}
-            remaining={autoDeployRemaining}
-            error={autoDeployError}
-            totalSeconds={AUTO_DEPLOY_SECONDS}
-            onCancel={cancelAutoDeploy}
-            onRetry={triggerAutoDeploy}
-          />
-        )}
 
         {/* Step Content */}
         <AnimatePresence mode="wait">
@@ -928,6 +1010,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               hasExistingTag={hasExistingTag}
               pendingTag={candidateTag}
               pendingAssets={candidatePendingAssets}
+              isAdapterConfigured={isFdcAdapterConfigured}
             />
           )}
 
@@ -942,42 +1025,31 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
           )}
 
           {depositFlow === 'FASSET' && step === 'AWAITING_DEPOSIT' && (
-            <StepAwaitingDeposit
+            <StepFdcDirectMint
               key="awaiting"
               tag={reservedTag!}
-              asset={asset}
               coreVaultAddress={coreVaultAddress}
               isVaultLoading={isVaultLoading}
               onCopyTag={handleCopyTag}
               onCopyVaultAddress={handleCopyVaultAddress}
               vaultCopied={vaultCopied}
               copied={copied}
-              cooldownRemaining={tagCooldownRemaining}
-              cooldownTotal={TAG_COOLDOWN_SECONDS}
-              isReady={isTagReady}
-            />
-          )}
-
-          {depositFlow === 'FASSET' && step === 'READY_TO_SETTLE' && (
-            <StepReadyToSettle
-              key="settle"
-              depositId={depositId!}
               xrplTxHash={xrplTxHash}
-              xrplAmount={xrplAmount}
-              asset={asset}
-              tag={reservedTag}
-              onSettle={handleSettle}
-              onReserveNewTag={handleReserveNewTag}
-              isSettling={isSettling || isSettleConfirming}
-              isDepositProcessedOnChain={isDepositProcessedOnChain}
-              isPendingDirectMintLoading={isPendingDirectMintLoading}
-              settlementError={settlementErrorMessage}
-              error={settleFailed || settleError?.message || null}
+              fdcStatus={fdcStatus}
+              fdcFee={fdcRequestFee}
+              fdcFeeMultiplier={FDC_REQUEST_FEE_MULTIPLIER}
+              fdcRoundId={fdcRoundId}
+              fdcError={fdcError}
+              isPreparing={fdcStatus === 'preparing'}
+              isRequesting={isFdcRequesting || isFdcRequestConfirming}
+              isRelaying={isFdcMinting || isFdcMintConfirming}
+              onPrepare={handlePrepareFdcRequest}
+              onRequestAttestation={handleRequestFdcAttestation}
+              onRelayMint={handleRelayFdcMint}
+              directMintingFeeBips={directMintingFeeBips}
+              directMintingMinimumFee={directMintingMinimumFee}
+              directMintingExecutorFee={directMintingExecutorFee}
             />
-          )}
-
-          {depositFlow === 'FASSET' && step === 'SETTLING' && (
-            <StepSettling key="settling" onBack={() => { setStep('READY_TO_SETTLE'); setSettleFailed(null); }} />
           )}
 
           {depositFlow === 'FASSET' && step === 'DEPLOY' && (
@@ -987,8 +1059,8 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
               onDeploy={handleDeployToStrategy}
               onSkip={handleSkipDeploy}
               onGoToDashboard={onBack}
-              isDeploying={isRebalancing || isRequestingSignature}
-              isConfirming={isRebalanceConfirming}
+              isDeploying={isRebalancing || isRequestingRebalance || isRequestingSignature}
+              isConfirming={isRebalanceRequestConfirming || isRebalanceConfirming}
               isSuccess={isRebalanceSuccess || deploySuccess}
               error={fceError || rebalanceError?.message || rebalanceReceiptError?.message}
               isRequestingSignature={isRequestingSignature}
@@ -1082,9 +1154,9 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
 // ─── Step Indicator ─────────────────────────────────────────────────────────
 const StepIndicator: React.FC<{steps: string[]; currentStep: string}> = ({steps, currentStep}) => {
   const labels: Record<string, string> = {
-    'SELECT': 'Select',
-    'RESERVE_TAG': 'Reserve Tag',
-    'AWAITING_DEPOSIT': 'Awaiting',
+  'SELECT': 'Select',
+  'RESERVE_TAG': 'Reserve Tag',
+  'AWAITING_DEPOSIT': 'Verify XRP',
     'READY_TO_SETTLE': 'Settle',
     'SETTLING': 'Settling',
     'DEPLOY': 'Deploy',
@@ -1148,7 +1220,8 @@ const StepSelectAsset: React.FC<{
   hasExistingTag: boolean;
   pendingTag: string | null;
   pendingAssets: bigint | undefined;
-}> = ({asset, setAsset, onReserve, onReserveNewTag, isRegistering, isFeeLoading, feeError, reservationFee, hasEnoughBalance, isTagsLoading, hasExistingTag, pendingTag, pendingAssets}) => (
+  isAdapterConfigured: boolean;
+}> = ({asset, setAsset, onReserve, onReserveNewTag, isRegistering, isFeeLoading, feeError, reservationFee, hasEnoughBalance, isTagsLoading, hasExistingTag, pendingTag, pendingAssets, isAdapterConfigured}) => (
   <motion.div
     initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -20}}
     className="glass-panel p-6 sm:p-8 rounded-3xl border border-[#1E1E1E]/15 shadow-soft-editorial bg-white/60"
@@ -1156,7 +1229,7 @@ const StepSelectAsset: React.FC<{
     <h3 className="text-lg font-bold text-[#1E1E1E] mb-1" style={{fontFamily: 'Manrope, sans-serif'}}>
       Select deposit asset
     </h3>
-    <p className="text-xs text-[#4A4A4A] mb-6">Choose the native asset you want to deposit</p>
+    <p className="text-xs text-[#4A4A4A] mb-6">The current public route supports native XRP on XRPL Testnet.</p>
 
     <div className="grid grid-cols-2 gap-4 mb-8">
       <AssetOption
@@ -1179,7 +1252,7 @@ const StepSelectAsset: React.FC<{
       <div className="flex items-start gap-2">
         <AlertCircle className="w-4 h-4 text-[#4A4A4A] mt-0.5 shrink-0" />
         <p className="text-xs text-[#4A4A4A] leading-relaxed">
-          This will reserve a unique minting tag on Flare. You'll then send native {asset} from your non-EVM wallet (e.g., Xumm) using this tag. The FAsset system will mint {asset === 'XRP' ? 'FXRP' : 'FBTC'} and route it to the ParentVault.
+          This will reserve a unique minting tag on Flare. Send native XRP from your non-EVM wallet (for example, Xaman) using this tag. FAssets verifies the payment with FDC, mints FXRP, and the adapter deposits it into the ParentVault atomically.
         </p>
       </div>
     </div>
@@ -1210,6 +1283,12 @@ const StepSelectAsset: React.FC<{
       </div>
     )}
 
+    {!isAdapterConfigured && (
+      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 mb-6">
+        <p className="text-xs text-amber-800">The FDC direct-mint adapter has not been deployed to this build yet. Native XRP deposits are intentionally disabled.</p>
+      </div>
+    )}
+
     {pendingTag && pendingAssets !== undefined && pendingAssets > 0n && (
       <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 mb-6">
         <div className="flex items-start gap-2">
@@ -1236,7 +1315,7 @@ const StepSelectAsset: React.FC<{
 
     <button
       onClick={onReserve}
-      disabled={isRegistering || isTagsLoading || (!isFeeLoading && !hasEnoughBalance && reservationFee > 0n)}
+      disabled={!isAdapterConfigured || isRegistering || isTagsLoading || (!isFeeLoading && !hasEnoughBalance && reservationFee > 0n)}
       className="w-full py-3.5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] text-[11px] font-bold uppercase tracking-[0.2em] hover:bg-[#000000] transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50"
     >
       {isRegistering ? (
@@ -1305,6 +1384,145 @@ const StepReserving: React.FC<{
     )}
   </motion.div>
 );
+
+// ─── FDC-native XRPL direct mint ───────────────────────────────────────────
+const StepFdcDirectMint: React.FC<{
+  tag: string;
+  coreVaultAddress: string | undefined;
+  isVaultLoading: boolean;
+  onCopyTag: () => void;
+  onCopyVaultAddress: () => void;
+  vaultCopied: boolean;
+  copied: boolean;
+  xrplTxHash: string | null;
+  fdcStatus: FdcStatus;
+  fdcFee: bigint | null;
+  fdcFeeMultiplier: bigint;
+  fdcRoundId: bigint | null;
+  fdcError: string | null;
+  isPreparing: boolean;
+  isRequesting: boolean;
+  isRelaying: boolean;
+  onPrepare: (hash: string) => void;
+  onRequestAttestation: () => void;
+  onRelayMint: () => void;
+  directMintingFeeBips: bigint | undefined;
+  directMintingMinimumFee: bigint | undefined;
+  directMintingExecutorFee: bigint | undefined;
+}> = ({tag, coreVaultAddress, isVaultLoading, onCopyTag, onCopyVaultAddress, vaultCopied, copied, xrplTxHash, fdcStatus, fdcFee, fdcFeeMultiplier, fdcRoundId, fdcError, isPreparing, isRequesting, isRelaying, onPrepare, onRequestAttestation, onRelayMint, directMintingFeeBips, directMintingMinimumFee, directMintingExecutorFee}) => {
+  const [hashInput, setHashInput] = useState(xrplTxHash ?? '');
+  const isWaiting = fdcStatus === 'waiting' || fdcStatus === 'requesting';
+  const feeFloor = directMintingMinimumFee !== undefined && directMintingExecutorFee !== undefined
+    ? directMintingMinimumFee + directMintingExecutorFee + 1n
+    : undefined;
+
+  return (
+    <motion.div
+      initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -20}}
+      className="glass-panel p-6 sm:p-8 rounded-3xl border border-[#1E1E1E]/15 shadow-soft-editorial bg-white/60"
+    >
+      <div className="text-center mb-7">
+        <div className="w-16 h-16 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center mx-auto mb-4">
+          {isWaiting || isPreparing || isRelaying ? <RefreshCw className="w-8 h-8 text-emerald-600 animate-spin" /> : <ShieldCheck className="w-8 h-8 text-emerald-600" />}
+        </div>
+        <h3 className="text-xl font-extrabold text-[#1E1E1E] mb-2" style={{fontFamily: 'Manrope, sans-serif'}}>
+          FDC-verified XRP deposit
+        </h3>
+        <p className="text-xs text-[#4A4A4A]">
+          No watcher or operator decides your deposit. Flare verifies the finalized XRPL payment proof on-chain before shares can be minted.
+        </p>
+      </div>
+
+      <div className="space-y-3 mb-6">
+        {feeFloor !== undefined && (
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[10px] text-amber-900 leading-relaxed">
+            Send more than <strong>{formatUnits(feeFloor, 6)} XRP</strong>. The live AssetManager deducts max({directMintingFeeBips !== undefined ? `${Number(directMintingFeeBips) / 100}%` : 'its percentage'}, {formatUnits(directMintingMinimumFee!, 6)} XRP) plus a {formatUnits(directMintingExecutorFee!, 6)} XRP relayer fee before vault shares are minted.
+          </div>
+        )}
+        <div className="flex items-start gap-3 p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+          <span className="w-5 h-5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs text-[#1E1E1E]">Send XRP to the FAssets Core Vault with destination tag <span className="font-mono font-bold">{tag}</span>.</p>
+            <div className="mt-2 p-3 rounded-lg bg-[#1E1E1E] text-[#F5F5F3] flex items-center gap-2">
+              <code className="text-[10px] font-mono break-all flex-1">{isVaultLoading ? 'Loading Core Vault…' : coreVaultAddress ?? 'Unable to load Core Vault'}</code>
+              {coreVaultAddress && <button onClick={onCopyVaultAddress} className="p-1.5 rounded bg-white/10 hover:bg-white/20">{vaultCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}</button>}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-start gap-3 p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+          <span className="w-5 h-5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] flex items-center justify-center text-[10px] font-bold shrink-0">2</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-[#1E1E1E] mb-2">Paste the validated XRPL transaction hash.</p>
+            <div className="flex gap-2">
+              <input value={hashInput} onChange={(event) => setHashInput(event.target.value.trim())} placeholder="A603…C3124" className="min-w-0 flex-1 px-3 py-2 rounded-lg border border-[#1E1E1E]/15 bg-white font-mono text-[10px]" />
+              <button onClick={() => onPrepare(hashInput)} disabled={!hashInput || isPreparing} className="px-3 py-2 rounded-lg bg-[#1E1E1E] text-white text-[10px] font-bold disabled:opacity-50">
+                {isPreparing ? 'Checking…' : 'Prepare proof'}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-start gap-3 p-3 rounded-xl bg-[#F5F5F3] border border-[#1E1E1E]/10">
+          <span className="w-5 h-5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] flex items-center justify-center text-[10px] font-bold shrink-0">3</span>
+          <div className="flex-1">
+            <p className="text-xs text-[#1E1E1E]">Request the FDC attestation, then relay its Merkle proof. The AssetManager performs the final verification and atomic vault deposit.</p>
+            {fdcStatus === 'prepared' && fdcFee !== null && (
+              <button onClick={onRequestAttestation} disabled={isRequesting} className="mt-3 w-full py-2.5 rounded-lg bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-wider disabled:opacity-50">
+                {isRequesting ? 'Confirming FDC request…' : `Request FDC proof (${fdcFeeMultiplier}× priority fee)`}
+              </button>
+            )}
+            {fdcStatus === 'waiting' && (
+              <div className="mt-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-950">
+                <div className="flex items-center gap-2.5 mb-2">
+                  <div className="relative flex items-center justify-center">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping absolute" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                  </div>
+                  <span className="text-xs font-bold text-amber-900">
+                    FDC Consensus in Progress (Voting Round {fdcRoundId?.toString() ?? '…'})
+                  </span>
+                </div>
+                <p className="text-[11px] text-amber-800/90 leading-relaxed mb-3">
+                  Flare Data Connector validators are attesting your XRPL payment on-chain. FDC consensus rounds take ~90–180 seconds. This page will automatically retrieve the proof and unlock settlement as soon as finalization completes.
+                </p>
+                <div className="w-full bg-amber-200/50 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-amber-500 h-full w-full animate-pulse" />
+                </div>
+                <div className="flex justify-between items-center mt-2 text-[10px] font-mono text-amber-800/70">
+                  <span>Status: Polling Flare Relay</span>
+                  <span>Auto-advances on finalization</span>
+                </div>
+              </div>
+            )}
+            {fdcStatus === 'ready' && (
+              <button onClick={onRelayMint} disabled={isRelaying} className="mt-3 w-full py-3 rounded-xl bg-emerald-600 text-white text-[11px] font-bold uppercase tracking-wider hover:bg-emerald-700 transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50">
+                {isRelaying ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /><span>Relaying Verified Proof…</span></>
+                ) : (
+                  <><span>Mint FXRP & Receive Vault Shares</span><ArrowRight className="w-4 h-4" /></>
+                )}
+              </button>
+            )}
+            {fdcStatus === 'deferred' && (
+              <button onClick={onRelayMint} disabled={isRelaying} className="mt-3 w-full py-3 rounded-xl bg-amber-600 text-white text-[11px] font-bold uppercase tracking-wider hover:bg-amber-700 transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50">
+                {isRelaying ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /><span>Retrying…</span></>
+                ) : (
+                  <><span>Retry After FAssets Rate Limit</span><ArrowRight className="w-4 h-4" /></>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {fdcError && <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-[10px] text-red-700 font-mono break-all">{fdcError}</div>}
+      <div className="mt-5 flex items-center justify-center gap-2 text-[10px] font-mono text-[#4A4A4A]">
+        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> FDC proof ownership is bound to the Flux adapter
+        <button onClick={onCopyTag} className="ml-1 underline underline-offset-2">copy tag {copied ? '✓' : ''}</button>
+      </div>
+    </motion.div>
+  );
+};
 
 // ─── FAsset Step: Awaiting Deposit ──────────────────────────────────────────
 const StepAwaitingDeposit: React.FC<{
@@ -1695,15 +1913,15 @@ const StepDeployToStrategy: React.FC<{
       <div className="space-y-2">
         <div className="flex items-start gap-2 text-[11px] text-[#4A4A4A]">
           <span className="w-1.5 h-1.5 rounded-full bg-[#E1BAC2] mt-1.5 shrink-0" />
-          <span>TEE extension signs the rebalance with the fccSigner key</span>
+          <span>Your wallet creates an on-chain FCC instruction; the active TEE machine signs its result.</span>
         </div>
         <div className="flex items-start gap-2 text-[11px] text-[#4A4A4A]">
           <span className="w-1.5 h-1.5 rounded-full bg-[#E1BAC2] mt-1.5 shrink-0" />
-          <span>Capital is deployed to the optimal yield strategy</span>
+          <span>The browser verifies the TEE signature against the vault, then your wallet relays the result.</span>
         </div>
         <div className="flex items-start gap-2 text-[11px] text-[#4A4A4A]">
           <span className="w-1.5 h-1.5 rounded-full bg-[#E1BAC2] mt-1.5 shrink-0" />
-          <span>TEE monitors yields 24/7 and rebalances automatically</span>
+          <span>The contract repeats the signature, nonce, deadline, and TWAP validation before moving funds.</span>
         </div>
       </div>
     </div>
@@ -1730,11 +1948,11 @@ const StepDeployToStrategy: React.FC<{
           className="py-3.5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-[#000000] transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50"
         >
           {isRequestingSignature ? (
-            <><RefreshCw className="w-4 h-4 animate-spin" /><span>Requesting TEE Signature...</span></>
+            <><RefreshCw className="w-4 h-4 animate-spin" /><span>Waiting for FCC Result...</span></>
           ) : isDeploying || isConfirming ? (
-            <><RefreshCw className="w-4 h-4 animate-spin" /><span>Deploying...</span></>
+            <><RefreshCw className="w-4 h-4 animate-spin" /><span>Confirm in Wallet...</span></>
           ) : (
-            <><Zap className="w-4 h-4 text-[#E1BAC2]" /><span>Deploy to Strategy</span></>
+            <><Zap className="w-4 h-4 text-[#E1BAC2]" /><span>Request FCC Rebalance</span></>
           )}
         </button>
         <button

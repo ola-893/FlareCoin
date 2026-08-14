@@ -297,7 +297,7 @@ export const Docs: React.FC = () => {
               Flux Protocol Documentation
             </h1>
             <p className="text-base text-[#4A4A4A] leading-relaxed mb-6 font-['Hanken_Grotesk',sans-serif] max-w-2xl">
-              Flux is a non-custodial, yield-optimization protocol built natively on <strong className="text-[#171414]">Flare Network</strong>. It enables holders of XRP, BTC, DOGE, and other non-smart-contract assets to earn DeFi yield through a single on-chain transaction — no bridging, no wrapped tokens, no custodians.
+              Flux is a non-custodial yield-optimization protocol built on <strong className="text-[#171414]">Flare Network</strong>. The current Coston2 demonstration supports a native-XRP route and direct ERC-4626 CDP deposits. Native XRP payments are verified with an FDC proof before vault shares can be minted.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
@@ -326,7 +326,7 @@ export const Docs: React.FC = () => {
             </p>
             <div className="space-y-3 mb-6">
               {[
-                {step: '01', title: 'Deposit', desc: 'Users send native XRP, BTC, or other supported assets. Flare\'s FAsset system automatically converts these into on-chain representations (FXRP, FBTC) using state proofs verified by the Flare Data Connector.'},
+                {step: '01', title: 'Deposit', desc: 'Users send native XRP to the FAssets Core Vault with a Flux destination tag. Flare\'s FAsset system converts it into FXRP only after an XRPPayment proof is verified on-chain.'},
                 {step: '02', title: 'Optimize', desc: 'The ParentVault deploys capital into approved yield strategies (Kinetic lending, Enosys DEX LP) via strategy adapters. A TEE enclave monitors yields across DeFi protocols and signs rebalance payloads when a better opportunity is found.'},
                 {step: '03', title: 'Earn', desc: 'Users hold Flux tokens (ERC-4626 shares) that accrue yield automatically. Token value increases as the underlying strategies earn interest, trading fees, and protocol rewards. Withdrawals are instant when liquidity is available.'},
               ].map((item, i) => (
@@ -390,16 +390,16 @@ uint256 shares = vault.deposit(assets, msg.sender);
 
               <h4 className="text-sm font-bold text-[#171414] mt-6 mb-2 font-['Manrope',sans-serif]">FAsset Direct Minting (Cross-Chain)</h4>
               <p className="text-xs text-[#4A4A4A] leading-relaxed mb-3 font-['Hanken_Grotesk',sans-serif]">
-                For native XRP, BTC, or DOGE, Flux uses Flare's FAsset Direct Minting system. The flow is:
+                The native-XRP route uses Flare's FAsset Direct Minting system and FDC. The flow is:
               </p>
               <div className="space-y-2 mb-4">
                 {[
-                  'Register a MintingTag via the FAssetAdapter (one-time, costs a small FLR reservation fee)',
-                  'Send native tokens (XRP/BTC) to the FAsset Core Vault address with your registered destination tag',
-                  'Flare Data Connector observes the payment and generates a state proof',
-                  'FAsset system mints FXRP/FBTC directly to the FAssetAdapter',
-                  'FAssetAdapter records the post-fee amount and queues a deposit in the ParentVault',
-                  'Anyone calls settleDirectMint() to transfer FAssets and mint Flux tokens to the user',
+                  'Register a MintingTag with the FDC direct-mint adapter (one-time; this costs the Flare tag reservation fee)',
+                  'Send native XRP on XRPL Testnet to the FAssets Core Vault using that destination tag',
+                  'Request an FDC XRPPayment attestation for the validated XRPL transaction hash',
+                  'After FDC finalization, relay the returned Merkle proof to the adapter',
+                  'The live FAssets AssetManager verifies the proof and mints FXRP',
+                  'The adapter pays the executor fee and atomically deposits the verified net FXRP into ParentVault, which mints Flux shares to the tag owner',
                 ].map((step, i) => (
                   <div key={i} className="flex gap-3 items-start">
                     <span className="flex-shrink-0 w-6 h-6 rounded-full bg-[#171414] flex items-center justify-center text-[10px] font-bold text-[#E1BAC2] font-mono">{i + 1}</span>
@@ -408,8 +408,8 @@ uint256 shares = vault.deposit(assets, msg.sender);
                 ))}
               </div>
 
-              <InfoCard type="warning" title="Asynchronous Settlement">
-                FAsset deposits are <strong>not instant</strong>. The Flare Data Connector requires multiple block confirmations before generating a state proof. Settlement typically takes <strong>1-3 minutes</strong> on Coston2 testnet but may take longer on mainnet depending on the underlying chain's finality.
+              <InfoCard type="warning" title="FDC Finalization">
+                FAsset deposits are <strong>not instant</strong>. The Flare Data Connector must finalize the XRPPayment proof before the asset manager can mint. The application will wait for the FDC round, then lets any user relay the proof without trusting a Flux server.
               </InfoCard>
             </div>
 
@@ -452,7 +452,7 @@ vault.withdraw(assetsToWithdraw, msg.sender, msg.sender);`} />
                   ['asset()', 'address (view)', 'The underlying ERC-20 token (e.g., FXRP, USDC.e)'],
                   ['totalAssets()', 'uint256 (view)', 'Idle balance + activeStrategy.totalValue()'],
                   ['activeStrategy', 'address', 'Currently deployed strategy adapter address'],
-                  ['fccSigner', 'address', 'TEE public key authorized to sign rebalance payloads'],
+                  ['teeAddress', 'address', 'Registered TEE machine authorized to sign FCC action results'],
                   ['liquidityBufferBps', 'uint16', 'Basis points retained locally for instant withdrawals'],
                   ['teeLastActive', 'uint256', 'Timestamp of last successful TEE-signed rebalance'],
                 ]}
@@ -469,8 +469,14 @@ function redeem(uint256 shares, address receiver, address owner) external return
 function queueFAssetDeposit(bytes32 depositId, address receiver) external;
 function settleFAssetDeposit(bytes32 depositId, uint256 assets) external returns (uint256 shares);
 
-// TEE-authorized rebalance — migrates capital between strategies
-function executeRebalance(RebalancePayload calldata payload) external;
+// Permissionless relay of one TEE-authorized FCC action result
+function executeRebalance(
+    bytes calldata resultData,
+    bytes32 actionId,
+    string calldata submissionTag,
+    uint8 status,
+    bytes calldata signature
+) external;
 
 // Emergency fallback — DAO-only, requires TEE timeout (7 days)
 function forceWithdrawAll(uint256 minAmountOut) external returns (uint256);`} />
@@ -610,9 +616,9 @@ function forceWithdrawAll(uint256 minAmountOut) external returns (uint256);`} />
             </p>
 
             <div id="tee-rebalancing" className="mb-10">
-              <h3 className="text-lg font-bold text-[#171414] mb-3 font-['Manrope',sans-serif]">TEE Rebalancing (EIP-712)</h3>
+              <h3 className="text-lg font-bold text-[#171414] mb-3 font-['Manrope',sans-serif]">TEE Rebalancing (FCC action result)</h3>
               <p className="text-sm text-[#4A4A4A] leading-relaxed mb-4 font-['Hanken_Grotesk',sans-serif]">
-                All strategy migrations are authorized by a <strong>Trusted Execution Environment (TEE)</strong> running Flare's Confidential Compute (FCC). The TEE signs an EIP-712 typed data payload that commits to:
+                All strategy migrations are authorized by a <strong>Trusted Execution Environment (TEE)</strong> running Flare's Confidential Compute (FCC). The TEE returns a signed action result whose data contains the rebalance parameters:
               </p>
               <CodeBlock language="solidity" code={`struct RebalancePayload {
     address newStrategy;      // Target strategy adapter
@@ -622,7 +628,7 @@ function forceWithdrawAll(uint256 minAmountOut) external returns (uint256);`} />
     uint256 twapStart;        // TWAP observation window start
     uint256 twapEnd;          // TWAP observation window end (must be >= 24h after start)
     bytes32 strategyDataHash; // Strategy-specific data hash
-    bytes   signature;        // EIP-712 signature from fccSigner
+    // The outer FCC result is signed by teeAddress with EIP-191 personal_sign
 }`} />
 
               <h4 className="text-sm font-bold text-[#171414] mt-6 mb-2 font-['Manrope',sans-serif]">Validation Rules</h4>
@@ -633,7 +639,8 @@ function forceWithdrawAll(uint256 minAmountOut) external returns (uint256);`} />
                   ['block.timestamp <= deadline', 'Prevents stale rebalance execution'],
                   ['twapEnd - twapStart >= 24 hours', 'Requires historical yield observation (not spot)'],
                   ['block.timestamp - twapEnd <= 2 hours', 'Prevents using outdated TWAP data'],
-                  ['ECDSA.recover(digest) == fccSigner', 'Verifies the TEE actually signed this payload'],
+                  ['status == 1', 'Rejects failed FCC actions before decoding their data'],
+                  ['ECDSA.recover(EIP-191(actionResultHash)) == teeAddress', 'Verifies the registered TEE signed the exact result data, ID and status'],
                 ]}
               />
 

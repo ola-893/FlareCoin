@@ -3,8 +3,8 @@
 /**
  * script/trigger-rebalance.mjs
  *
- * CLI utility to trigger requestRebalance() on ParentVault with up to 20 retries.
- * Handles RPC timeouts and ngrok tunnel packet drops seamlessly.
+ * CLI utility to trigger requestRebalance() on ParentVault.
+ * A private key must be supplied via PRIVATE_KEY; no key is embedded here.
  *
  * Usage:
  *   node script/trigger-rebalance.mjs
@@ -21,9 +21,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, '../.env') });
 
 const COSTON2_RPC_URL = process.env.COSTON2_RPC_URL || 'https://coston2-api.flare.network/ext/C/rpc';
-const PRIVATE_KEY = process.env.PRIVATE_KEY || '0xce44c9cf317f66b5e3ea12ee1c92bb77a6dd2d02265b086eba66f8f338d5d7dc';
+const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const PARENT_VAULT_ADDRESS = process.env.PARENT_VAULT_ADDRESS || '0x01f64160E4928Eba5607aE294F9B66090Dc323B3';
-const MAX_RETRIES = 20;
+const FCE_INSTRUCTION_FEE_WEI = BigInt(process.env.FCE_INSTRUCTION_FEE_WEI || '1000000');
+const MAX_RETRIES = 3;
 
 const coston2 = {
   id: 114,
@@ -53,8 +54,12 @@ const PARENT_VAULT_ABI = [
     inputs: [], outputs: [{ name: '', type: 'address' }],
   },
   {
-    type: 'function', name: 'requestRebalance', stateMutability: 'nonpayable',
+    type: 'function', name: 'requestRebalance', stateMutability: 'payable',
     inputs: [], outputs: [],
+  },
+  {
+    type: 'function', name: 'lastInstructionId', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'bytes32' }],
   },
 ];
 
@@ -64,9 +69,17 @@ const ERC20_ABI = [
     inputs: [{ name: 'account', type: 'address' }],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  {
+    type: 'function', name: 'decimals', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'uint8' }],
+  },
 ];
 
 async function main() {
+  if (!PRIVATE_KEY) {
+    throw new Error('PRIVATE_KEY is required. Refusing to use an embedded or default signing key.');
+  }
+
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║     FlareYield Rebalance Trigger — 20 Retry Resilience      ║');
   console.log('╚════════════════════════════════════════════════════════════╝\n');
@@ -75,6 +88,7 @@ async function main() {
   console.log(`[Rebalance] Caller Address : ${account.address}`);
   console.log(`[Rebalance] ParentVault    : ${PARENT_VAULT_ADDRESS}`);
   console.log(`[Rebalance] Coston2 RPC    : ${COSTON2_RPC_URL}\n`);
+  console.log(`[Rebalance] FCC fee (wei)  : ${FCE_INSTRUCTION_FEE_WEI}\n`);
 
   const publicClient = createPublicClient({ chain: coston2, transport: http(COSTON2_RPC_URL) });
   const walletClient = createWalletClient({ chain: coston2, transport: http(COSTON2_RPC_URL), account });
@@ -87,17 +101,31 @@ async function main() {
     publicClient.readContract({ address: PARENT_VAULT_ADDRESS, abi: PARENT_VAULT_ABI, functionName: 'teeAddress' }),
   ]);
 
-  const idleAssets = await publicClient.readContract({
-    address: assetAddr,
-    abi: ERC20_ABI,
-    functionName: 'balanceOf',
-    args: [PARENT_VAULT_ADDRESS],
-  });
+  const [idleAssets, decimals] = await Promise.all([
+    publicClient.readContract({
+      address: assetAddr,
+      abi: ERC20_ABI,
+      functionName: 'balanceOf',
+      args: [PARENT_VAULT_ADDRESS],
+    }),
+    publicClient.readContract({
+      address: assetAddr,
+      abi: ERC20_ABI,
+      functionName: 'decimals',
+    }),
+  ]);
 
-  console.log(`[Status] Idle Assets        : ${formatUnits(idleAssets, 18)} FXRP`);
-  console.log(`[Status] Rebalance Threshold: ${formatUnits(threshold, 18)} FXRP`);
+  console.log(`[Status] Idle Assets        : ${formatUnits(idleAssets, decimals)} FXRP`);
+  console.log(`[Status] Rebalance Threshold: ${formatUnits(threshold, decimals)} FXRP`);
   console.log(`[Status] InstructionSender : ${senderAddr}`);
   console.log(`[Status] TEE Machine       : ${teeAddr}\n`);
+
+  if (threshold === 0n) {
+    throw new Error('rebalanceThreshold is zero. Set a nonzero owner-controlled threshold before requesting a rebalance.');
+  }
+  if (idleAssets < threshold) {
+    throw new Error('Idle assets are below rebalanceThreshold; no instruction will be sent.');
+  }
 
   let lastError = null;
 
@@ -110,6 +138,7 @@ async function main() {
         address: PARENT_VAULT_ADDRESS,
         abi: PARENT_VAULT_ABI,
         functionName: 'requestRebalance',
+        value: FCE_INSTRUCTION_FEE_WEI,
       });
 
       console.log(`[Rebalance] Tx submitted: ${hash} — awaiting confirmation...`);
@@ -119,6 +148,12 @@ async function main() {
         console.log(`\n🎉 SUCCESS! requestRebalance() confirmed in block ${receipt.blockNumber}! (Attempt ${attempt})`);
         console.log(`   Tx Hash: ${hash}`);
         console.log(`   Explorer: https://coston2-explorer.flare.network/tx/${hash}\n`);
+        const instructionId = await publicClient.readContract({
+          address: PARENT_VAULT_ADDRESS,
+          abi: PARENT_VAULT_ABI,
+          functionName: 'lastInstructionId',
+        });
+        console.log(`   FCC instruction ID: ${instructionId}\n`);
         return;
       } else {
         throw new Error(`Transaction reverted: ${hash}`);

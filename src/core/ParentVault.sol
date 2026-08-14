@@ -264,7 +264,7 @@ contract ParentVault is
      * @notice Trigger a TEE rebalance by sending instruction to FCE extension
      * @dev Can be called manually or automatically on deposit if threshold is met
      */
-    function requestRebalance() public whenNotPaused {
+    function requestRebalance() public payable override whenNotPaused {
         if (instructionSender == address(0)) return; // Silently skip if not configured
         
         uint256 idleAssets = IERC20(asset()).balanceOf(address(this));
@@ -294,7 +294,10 @@ contract ParentVault is
         });
 
         // Send instruction to TEE Extension Registry (returns bytes32 instructionId)
-        bytes32 instructionId = IInstructionSender(instructionSender).sendInstructions(params);
+        // The FCC registry charges a native-token instruction fee. The caller
+        // supplies it with this request and it is forwarded unchanged through
+        // the registered InstructionSender to the registry.
+        bytes32 instructionId = IInstructionSender(instructionSender).sendInstructions{value: msg.value}(params);
         lastInstructionId = instructionId;
 
         emit RebalanceRequested(instructionId, idleAssets, strategies.length);
@@ -374,7 +377,14 @@ contract ParentVault is
             payloadHash
         ));
 
-        address recoveredSigner = ECDSA.recover(ethHash, signature);
+        // FCC returns compact Ethereum signatures with recovery ID 0/1. OpenZeppelin
+        // expects the legacy 27/28 representation, so normalize only that byte
+        // before recovery. Other malformed signatures still revert in ECDSA.
+        bytes memory normalizedSignature = signature;
+        if (normalizedSignature.length == 65 && uint8(normalizedSignature[64]) < 27) {
+            normalizedSignature[64] = bytes1(uint8(normalizedSignature[64]) + 27);
+        }
+        address recoveredSigner = ECDSA.recover(ethHash, normalizedSignature);
         require(recoveredSigner == teeAddress, "Invalid TEE signature");
 
         // Decode the actual payload

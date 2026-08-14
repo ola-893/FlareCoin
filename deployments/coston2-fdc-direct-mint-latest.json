@@ -1,0 +1,9 @@
+{
+  "assetManagerFXRP": "0xc1Ca88b937d0b528842F95d5731ffB586f4fbDFA",
+  "chainId": 114,
+  "fdcDirectMintAdapter": "0xDd305DEe5a175575C74c62FC74065efb57e06ace",
+  "mintingTagManager": "0x094511737909b626391106bBc21B25feb2D67B96",
+  "network": "Coston2",
+  "owner": "0x506e724d7FDdbF91B6607d5Af0700d385D952f8a",
+  "parentVault": "0x01f64160E4928Eba5607aE294F9B66090Dc323B3"
+}

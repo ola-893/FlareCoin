@@ -64,14 +64,6 @@ contract InstructionSender is IInstructionSender {
     }
 
     /**
-     * @notice Manually set extension ID (for linking pre-registered TEE machine extensions)
-     * @param _extensionId Extension ID to set
-     */
-    function setExplicitExtensionId(uint256 _extensionId) external {
-        extensionId = _extensionId;
-    }
-
-    /**
      * @notice Send instructions to TEE extension via registry
      * @param params Instruction parameters (opType, opCommand, message, etc.)
      * @return instructionId Generated instruction ID (bytes32)
