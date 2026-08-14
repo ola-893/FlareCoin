@@ -83,7 +83,7 @@ Flux uses Flare's protocol-native verification layers for separate jobs:
 
 ## 📁 Documentation Index (`docs/`)
 
-All project documentation is organized chronologically under the `docs/` directory:
+All project documentation is organized chronologically and by domain under the `docs/` directory:
 
 ```
 docs/
@@ -91,40 +91,41 @@ docs/
 │   ├── 01-platform-overview.md
 │   ├── 02-multi-vault-architecture.md
 │   ├── 03-fasset-direct-minting.md
-│   └── 04-tee-rebalance-engine.md
+│   ├── 04-tee-rebalance-engine.md
+│   └── 05-settlement-flow-diagram.md
 ├── 02-deployments/
+│   ├── 01-coston2-deployment-record.md
+│   ├── 02-multi-vault-cdp-deployment.md
+│   ├── 03-enosys-v3-deployment-summary.md
 │   ├── 04-coston2-fcc-redeploy-status.md
 │   ├── 05-deployment-checklist.md
-│   ├── 06-phase1-complete.md
-│   ├── 07-phase1-hash-verification.md
-│   ├── 08-phase1-status.md
-│   ├── 09-phase1-todo.md
-│   ├── 10-phase2-complete.md
-│   ├── 11-phase2-deployment-guide.md
-│   ├── 12-phase2-phase3-deployed.md
-│   ├── 13-phase3-complete.md
-│   └── 14-system-wired-complete.md
+│   ├── 06-phase1-complete.md ... 14-system-wired-complete.md
+│   └── 15-upgrade-execution-checklist.md
 ├── 03-strategies/
-│   └── (Yield strategy integration details)
+│   ├── 01-ftso-v2-delegation-strategy.md
+│   ├── 02-sparkdex-lp-strategy.md
+│   ├── 03-enosys-v3-concentrated-liquidity.md
+│   └── 04-smart-account-direct-minting.md
 ├── 04-audit-and-diagnostics/
-│   ├── 05-corrections-summary.md
-│   ├── 06-critical-blockers-fce.md
-│   ├── 07-honest-status.md
-│   ├── 08-honest-system-status.md
-│   └── 09-proof-of-work.md
+│   ├── 01-audit-fixes-applied.md ... 09-proof-of-work.md
+│   ├── 10-infrastructure-blocked-state.md ... 14-settlement-verified.md
+│   ├── 15-settlement-clarification.md ... 18-storage-safety-final-proof.md
+│   └── 19-contract-verification-results.md ... 23-current-status.md
 ├── 05-guides/
-│   ├── 02-db-credentials-request.md
-│   ├── 03-phase3-quick-start.md
-│   ├── 04-phase3-registration-guide.md
-│   └── 05-phase5-e2e-testing.md
+│   ├── 01-deployment-guide.md ... 05-phase5-e2e-testing.md
+│   ├── 06-tester-setup-guide.md
+│   ├── 07-tester-quickstart.md
+│   ├── 08-testing-guide.md
+│   ├── 09-quick-start.md
+│   └── 10-quick-reference.md
 └── 06-fce-and-executor/
-    ├── 01-executor-migration.md
-    ├── 02-fce-bugs-fixed.md
-    ├── 03-fce-implementation-complete.md
-    ├── 04-fce-integration-action-plan.md
-    ├── 05-fce-integration-reality-check.md
-    ├── 06-fce-integration-status.md
-    └── 07-fce-technical-reference-corrected.md
+    ├── 01-executor-migration.md ... 07-fce-technical-reference-corrected.md
+    ├── 08-fdc-verified-direct-mint.md
+    ├── 09-fce-extension-registration.md
+    ├── 10-extension-verification-checklist.md
+    ├── 11-registration-corrected-steps.md
+    ├── 12-critical-fix-tee-node-version.md
+    └── 13-task4-fce-client-fix.md
 ```
 
 ---
