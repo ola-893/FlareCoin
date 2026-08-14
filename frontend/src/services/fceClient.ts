@@ -77,7 +77,11 @@ function teePayloadHash(result: TeeActionResult, chainId: bigint): `0x${string}`
 
 /** Fetches one completed action. A 404 means the FCC stack has not finished it yet. */
 export async function getTeeActionResult(instructionId: `0x${string}`): Promise<TeeActionResult | null> {
-  const response = await fetch(`${endpoint()}/action/result/${instructionId}`);
+  const response = await fetch(`${endpoint()}/action/result/${instructionId}`, {
+    headers: {
+      'ngrok-skip-browser-warning': 'true',
+    },
+  });
   if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(`FCC result endpoint returned ${response.status}.`);
@@ -150,7 +154,17 @@ export async function waitForSignedRebalance(
 /** Checks that the public FCC result endpoint is reachable before a wallet request. */
 export async function checkFceHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${endpoint()}/info`);
+    const configured = FCE_CONFIG.endpoint.replace(/\/$/, '');
+    if (!configured) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const response = await fetch(`${configured}/info`, {
+      signal: controller.signal,
+      headers: {
+        'ngrok-skip-browser-warning': 'true',
+      },
+    });
+    clearTimeout(timer);
     return response.ok;
   } catch {
     return false;

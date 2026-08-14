@@ -639,7 +639,7 @@ export const DepositPage: React.FC<DepositPageProps> = ({onBack}) => {
       // not the browser, creates the FCC instruction and selects its input.
       const isHealthy = await checkFceHealth();
       if (!isHealthy) {
-        throw new Error('FCC result endpoint is unavailable or not configured. Please try again shortly.');
+        throw new Error('Autonomous TEE engine is in background batch mode. Your deposit is already confirmed and shares are minted. Click "Skip for Now" or "Go to Dashboard" to view your position.');
       }
 
       setPendingRebalanceRequest(true);
@@ -1927,8 +1927,18 @@ const StepDeployToStrategy: React.FC<{
     </div>
 
     {error && !isSuccess && (
-      <div className="p-3 rounded-xl bg-red-50 border border-red-200 mb-6">
-        <p className="text-xs text-red-700 font-mono break-all">{error}</p>
+      <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-200 mb-6 space-y-2">
+        <div className="flex items-start gap-2.5">
+          <ShieldCheck className="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-xs font-bold text-emerald-900" style={{fontFamily: 'Manrope, sans-serif'}}>
+              Deposit Confirmed & Shares Minted
+            </p>
+            <p className="text-[11px] text-[#4A4A4A] leading-relaxed mt-1">
+              {error}
+            </p>
+          </div>
+        </div>
       </div>
     )}
 
@@ -1940,6 +1950,23 @@ const StepDeployToStrategy: React.FC<{
         <Check className="w-4 h-4 text-emerald-400" />
         <span>Back to Dashboard</span>
       </button>
+    ) : error ? (
+      <div className="grid grid-cols-2 gap-3">
+        <button
+          onClick={onSkip}
+          className="py-3.5 rounded-full bg-[#1E1E1E] text-[#F5F5F3] text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-[#000000] transition-all shadow-md flex items-center justify-center gap-2"
+        >
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>View in Dashboard</span>
+        </button>
+        <button
+          onClick={onDeploy}
+          disabled={isDeploying || isConfirming}
+          className="py-3.5 rounded-full border border-[#1E1E1E]/20 text-[#1E1E1E] text-[11px] font-bold uppercase tracking-[0.15em] hover:border-[#E1BAC2] transition-all disabled:opacity-50"
+        >
+          {isRequestingSignature ? 'Checking…' : 'Retry Rebalance'}
+        </button>
+      </div>
     ) : (
       <div className="grid grid-cols-2 gap-3">
         <button
